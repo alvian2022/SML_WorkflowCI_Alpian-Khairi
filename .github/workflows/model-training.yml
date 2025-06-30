@@ -1,4 +1,4 @@
-name: MLflow CI/CD Model Training - Simple
+name: MLflow CI/CD Model Training - Fixed
 
 on:
   push:
@@ -83,7 +83,7 @@ jobs:
       run: |
         conda activate iris-classification-env
         python --version
-        pip list | grep -E "(mlflow|pandas|scikit-learn)"
+        pip list | grep -E "(mlflow|pandas|scikit-learn)" || echo "Packages will be installed by conda"
         
     - name: Run MLflow Project Training
       shell: bash -l {0}
@@ -122,7 +122,7 @@ jobs:
         done
         
     - name: Upload training artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: model-artifacts-${{ github.run_number }}
         path: |
@@ -151,8 +151,41 @@ jobs:
         echo "$(ls -la *.pkl *.png *.txt 2>/dev/null || echo 'No artifacts found')" >> model_summary.md
         
     - name: Upload model summary
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: model-summary-${{ github.run_number }}
         path: MLProject/model_summary.md
         retention-days: 30
+        if-no-files-found: warn
+        
+    - name: Commit and push artifacts to repository
+      if: github.ref == 'refs/heads/main'
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        # Create artifacts directory if it doesn't exist
+        mkdir -p model_artifacts
+        
+        # Copy artifacts with error handling
+        cp MLProject/trained_model_ci.pkl model_artifacts/ 2>/dev/null || echo "Model file not found"
+        cp MLProject/confusion_matrix_ci.png model_artifacts/ 2>/dev/null || echo "Confusion matrix not found"
+        cp MLProject/feature_importance_ci.png model_artifacts/ 2>/dev/null || echo "Feature importance not found"
+        cp MLProject/classification_report_ci.txt model_artifacts/ 2>/dev/null || echo "Classification report not found"
+        cp MLProject/model_summary.md model_artifacts/ 2>/dev/null || echo "Model summary not found"
+        
+        # Add timestamp to artifacts
+        echo "$(date)" > model_artifacts/last_training.txt
+        echo "Workflow: ${{ github.run_number }}" >> model_artifacts/last_training.txt
+        echo "Commit: ${{ github.sha }}" >> model_artifacts/last_training.txt
+        
+        # Commit if there are changes
+        git add model_artifacts/
+        git diff --staged --quiet || (git commit -m "🤖 Auto-update model artifacts from CI/CD [skip ci]
+
+📊 Training Summary:
+- Workflow: ${{ github.run_number }}
+- Parameters: n_estimators=${{ github.event.inputs.n_estimators || 100 }}, max_depth=${{ github.event.inputs.max_depth || 10 }}
+- Experiment: ${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}
+
+Author: alpian_khairi_C1BO" && git push)
