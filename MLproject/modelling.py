@@ -1,8 +1,7 @@
 """
-MLProject modelling.py
-CI/CD Model Training for MLflow Project
+MLProject modelling.py - IMPROVED VERSION
+CI/CD Model Training for MLflow Project with Better Local Artifact Management
 Author: alpian_khairi_C1BO
-Description: Automated model training for CI/CD workflow with improved error handling
 """
 
 import mlflow
@@ -14,6 +13,7 @@ import os
 import sys
 import logging
 import time
+import shutil
 from datetime import datetime
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
@@ -36,7 +36,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 class MLProjectTrainer:
-    """MLProject model trainer for CI/CD workflow with improved error handling"""
+    """MLProject model trainer with dual tracking (remote + local artifacts)"""
     
     def __init__(self, args):
         """Initialize trainer with arguments"""
@@ -44,12 +44,18 @@ class MLProjectTrainer:
         self.model = None
         self.target_names = ['Setosa', 'Versicolor', 'Virginica']
         self.use_remote_tracking = False
+        self.local_artifacts_dir = "model_artifacts"
+        self.setup_local_artifacts_dir()
         self.setup_mlflow()
+    
+    def setup_local_artifacts_dir(self):
+        """Setup local artifacts directory"""
+        os.makedirs(self.local_artifacts_dir, exist_ok=True)
+        logger.info(f"Local artifacts directory: {self.local_artifacts_dir}")
     
     def test_dagshub_connection(self, timeout=10):
         """Test connection to DagsHub with retry mechanism"""
         try:
-            # Configure requests session with retry strategy
             session = requests.Session()
             retry_strategy = Retry(
                 total=3,
@@ -60,7 +66,6 @@ class MLProjectTrainer:
             session.mount("http://", adapter)
             session.mount("https://", adapter)
             
-            # Test connection to DagsHub
             dagshub_url = "https://dagshub.com/alvian2022/iris-classification"
             response = session.get(dagshub_url, timeout=timeout)
             
@@ -79,9 +84,8 @@ class MLProjectTrainer:
             return False
     
     def setup_mlflow(self):
-        """Setup MLflow tracking with fallback to local tracking"""
+        """Setup MLflow tracking with dual storage (remote + local)"""
         try:
-            # Check if DagsHub token is available
             dagshub_token = os.getenv('DAGSHUB_TOKEN')
             
             if dagshub_token and self.test_dagshub_connection():
@@ -90,7 +94,6 @@ class MLProjectTrainer:
                     dagshub_repo_owner = "alvian2022"
                     dagshub_repo_name = "iris-classification"
                     
-                    # Initialize DagsHub with timeout
                     logger.info("Initializing DagsHub connection...")
                     
                     # Set timeouts for MLflow
@@ -115,6 +118,8 @@ class MLProjectTrainer:
                         mlflow.get_tracking_uri()
                         self.use_remote_tracking = True
                         logger.info(f"✅ DagsHub tracking setup successful: {mlflow_tracking_uri}")
+                        logger.info("📊 Metrics and models will be logged to DagsHub")
+                        logger.info("💾 Artifacts will also be saved locally")
                     except Exception as e:
                         logger.warning(f"⚠️ MLflow connection test failed: {str(e)}")
                         raise e
@@ -143,6 +148,7 @@ class MLProjectTrainer:
             mlflow.set_tracking_uri("file:./mlruns")
             self.use_remote_tracking = False
             logger.info("✅ Local MLflow tracking setup completed")
+            logger.info("📁 Experiments will be stored in ./mlruns")
         except Exception as e:
             logger.error(f"Error setting up local tracking: {str(e)}")
     
@@ -160,7 +166,7 @@ class MLProjectTrainer:
                 logger.warning(f"Attempt {attempt + 1}/{max_retries} to set experiment failed: {str(e)}")
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
+                    retry_delay *= 2
                 else:
                     logger.error("Failed to set experiment after all retries")
                     raise e
@@ -228,8 +234,23 @@ class MLProjectTrainer:
                     else:
                         raise e
     
+    def save_artifact_locally(self, file_path, description=""):
+        """Save artifact to local artifacts directory"""
+        try:
+            if os.path.exists(file_path):
+                local_path = os.path.join(self.local_artifacts_dir, os.path.basename(file_path))
+                shutil.copy2(file_path, local_path)
+                logger.info(f"Saved locally: {local_path} {description}")
+                return local_path
+            else:
+                logger.warning(f"File not found for local save: {file_path}")
+                return None
+        except Exception as e:
+            logger.error(f"Error saving artifact locally: {str(e)}")
+            return None
+    
     def train_model(self):
-        """Train model with MLflow tracking"""
+        """Train model with MLflow tracking and local artifacts"""
         try:
             logger.info("Starting CI/CD model training...")
             
@@ -253,7 +274,8 @@ class MLProjectTrainer:
                     "random_state": self.args.random_state,
                     "timestamp": datetime.now().isoformat(),
                     "mlproject_run": True,
-                    "tracking_type": "remote" if self.use_remote_tracking else "local"
+                    "tracking_type": "remote" if self.use_remote_tracking else "local",
+                    "local_artifacts_dir": self.local_artifacts_dir
                 }
                 
                 for key, value in params.items():
@@ -298,7 +320,14 @@ class MLProjectTrainer:
                 # Log classification report
                 self.log_classification_report(y_test, y_pred)
                 
-                # Log model
+                # Save and log model
+                model_file = "trained_model_ci.pkl"
+                joblib.dump(self.model, model_file)
+                
+                # Save model locally
+                local_model_path = self.save_artifact_locally(model_file, "(model)")
+                
+                # Log model to MLflow
                 try:
                     self.safe_mlflow_operation(
                         mlflow.sklearn.log_model,
@@ -306,14 +335,17 @@ class MLProjectTrainer:
                         "model",
                         registered_model_name=self.args.model_name
                     )
+                    logger.info("✅ Model registered successfully")
                 except Exception as e:
                     logger.warning(f"Failed to register model: {str(e)}")
                     # Still log the model without registration
                     self.safe_mlflow_operation(mlflow.sklearn.log_model, self.model, "model")
                 
-                # Save model locally for CI artifacts
-                joblib.dump(self.model, "trained_model_ci.pkl")
-                self.safe_mlflow_operation(mlflow.log_artifact, "trained_model_ci.pkl")
+                # Log artifact to MLflow
+                self.safe_mlflow_operation(mlflow.log_artifact, model_file)
+                
+                # Create summary
+                self.create_training_summary(metrics)
                 
                 logger.info("Model training completed successfully!")
                 logger.info(f"Accuracy: {accuracy:.4f}")
@@ -321,14 +353,17 @@ class MLProjectTrainer:
                 logger.info(f"Recall: {recall:.4f}")
                 logger.info(f"F1-Score: {f1:.4f}")
                 logger.info(f"Tracking Type: {'Remote (DagsHub)' if self.use_remote_tracking else 'Local'}")
+                logger.info(f"Local Artifacts: {self.local_artifacts_dir}")
                 
                 return {
                     'accuracy': accuracy,
                     'precision': precision,
                     'recall': recall,
                     'f1_score': f1,
-                    'model_path': "trained_model_ci.pkl",
-                    'tracking_type': 'remote' if self.use_remote_tracking else 'local'
+                    'model_path': model_file,
+                    'local_model_path': local_model_path,
+                    'tracking_type': 'remote' if self.use_remote_tracking else 'local',
+                    'local_artifacts_dir': self.local_artifacts_dir
                 }
                 
         except Exception as e:
@@ -336,7 +371,7 @@ class MLProjectTrainer:
             raise
     
     def create_visualizations(self, y_test, y_pred, y_pred_proba):
-        """Create and log visualizations"""
+        """Create and log visualizations with local backup"""
         
         # Confusion Matrix
         plt.figure(figsize=(8, 6))
@@ -348,8 +383,13 @@ class MLProjectTrainer:
         plt.ylabel('Actual')
         plt.xlabel('Predicted')
         plt.tight_layout()
-        plt.savefig('confusion_matrix_ci.png', dpi=300, bbox_inches='tight')
-        self.safe_mlflow_operation(mlflow.log_artifact, 'confusion_matrix_ci.png')
+        
+        cm_file = 'confusion_matrix_ci.png'
+        plt.savefig(cm_file, dpi=300, bbox_inches='tight')
+        
+        # Save locally and log to MLflow
+        self.save_artifact_locally(cm_file, "(confusion matrix)")
+        self.safe_mlflow_operation(mlflow.log_artifact, cm_file)
         plt.close()
         
         # Feature Importance
@@ -363,19 +403,25 @@ class MLProjectTrainer:
         plt.title('Feature Importance - CI/CD Training\nAuthor: alpian_khairi_C1BO')
         plt.ylabel('Importance')
         plt.tight_layout()
-        plt.savefig('feature_importance_ci.png', dpi=300, bbox_inches='tight')
-        self.safe_mlflow_operation(mlflow.log_artifact, 'feature_importance_ci.png')
+        
+        fi_file = 'feature_importance_ci.png'
+        plt.savefig(fi_file, dpi=300, bbox_inches='tight')
+        
+        # Save locally and log to MLflow
+        self.save_artifact_locally(fi_file, "(feature importance)")
+        self.safe_mlflow_operation(mlflow.log_artifact, fi_file)
         plt.close()
         
         logger.info("Visualizations created and logged")
     
     def log_classification_report(self, y_test, y_pred):
-        """Log classification report"""
+        """Log classification report with local backup"""
         
         report_text = classification_report(y_test, y_pred, 
                                           target_names=self.target_names)
         
-        with open('classification_report_ci.txt', 'w') as f:
+        report_file = 'classification_report_ci.txt'
+        with open(report_file, 'w') as f:
             f.write("CLASSIFICATION REPORT - CI/CD TRAINING\n")
             f.write("="*50 + "\n")
             f.write(f"Author: alpian_khairi_C1BO\n")
@@ -384,10 +430,69 @@ class MLProjectTrainer:
             f.write(f"Model: Random Forest\n")
             f.write(f"Parameters: n_estimators={self.args.n_estimators}, max_depth={self.args.max_depth}\n")
             f.write(f"Tracking: {'Remote (DagsHub)' if self.use_remote_tracking else 'Local'}\n")
+            f.write(f"Local Artifacts: {self.local_artifacts_dir}\n")
             f.write("="*50 + "\n\n")
             f.write(report_text)
         
-        self.safe_mlflow_operation(mlflow.log_artifact, 'classification_report_ci.txt')
+        # Save locally and log to MLflow
+        self.save_artifact_locally(report_file, "(classification report)")
+        self.safe_mlflow_operation(mlflow.log_artifact, report_file)
+    
+    def create_training_summary(self, metrics):
+        """Create comprehensive training summary"""
+        summary_file = "training_summary.md"
+        
+        with open(summary_file, 'w') as f:
+            f.write("# MLProject Training Summary\n\n")
+            f.write(f"**Author:** alpian_khairi_C1BO\n")
+            f.write(f"**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"**Training Type:** CI/CD MLProject Workflow\n")
+            f.write(f"**Tracking:** {'Remote (DagsHub)' if self.use_remote_tracking else 'Local MLflow'}\n\n")
+            
+            f.write("## Model Configuration\n")
+            f.write(f"- **Algorithm:** Random Forest Classifier\n")
+            f.write(f"- **N Estimators:** {self.args.n_estimators}\n")
+            f.write(f"- **Max Depth:** {self.args.max_depth}\n")
+            f.write(f"- **Random State:** {self.args.random_state}\n\n")
+            
+            f.write("## Performance Metrics\n")
+            f.write(f"- **Accuracy:** {metrics['accuracy']:.4f}\n")
+            f.write(f"- **Precision:** {metrics['precision']:.4f}\n")
+            f.write(f"- **Recall:** {metrics['recall']:.4f}\n")
+            f.write(f"- **F1-Score:** {metrics['f1_score']:.4f}\n\n")
+            
+            f.write("## Artifacts Generated\n")
+            f.write("### MLflow Tracked Files\n")
+            f.write("- Model (registered in MLflow)\n")
+            f.write("- Metrics and parameters\n")
+            f.write("- Confusion matrix visualization\n")
+            f.write("- Feature importance plot\n")
+            f.write("- Classification report\n\n")
+            
+            f.write("### Local Backup Files\n")
+            f.write(f"Location: `./{self.local_artifacts_dir}/`\n")
+            f.write("- trained_model_ci.pkl\n")
+            f.write("- confusion_matrix_ci.png\n")
+            f.write("- feature_importance_ci.png\n")
+            f.write("- classification_report_ci.txt\n")
+            f.write("- training_summary.md\n\n")
+            
+            if self.use_remote_tracking:
+                f.write("## Remote Tracking\n")
+                f.write("✅ **DagsHub Integration Active**\n")
+                f.write("- Experiments: https://dagshub.com/alvian2022/iris-classification\n")
+                f.write("- Model Registry: Available in DagsHub\n")
+                f.write("- Metrics Dashboard: Available in DagsHub MLflow UI\n\n")
+            else:
+                f.write("## Local Tracking\n")
+                f.write("📁 **Local MLflow Tracking**\n")
+                f.write("- Experiments stored in: ./mlruns\n")
+                f.write("- View with: `mlflow ui`\n\n")
+        
+        # Save locally and log to MLflow
+        self.save_artifact_locally(summary_file, "(training summary)")
+        self.safe_mlflow_operation(mlflow.log_artifact, summary_file)
+        logger.info(f"Training summary created: {summary_file}")
 
 def parse_arguments():
     """Parse command line arguments"""
@@ -414,7 +519,7 @@ def main():
     print("="*60)
     print("MLPROJECT CI/CD MODEL TRAINING")
     print("Author: alpian_khairi_C1BO")
-    print("Version: 2.0 (Enhanced Error Handling)")
+    print("Version: 3.0 (Enhanced with Local Artifacts)")
     print("="*60)
     
     try:
@@ -444,16 +549,25 @@ def main():
         print(f"F1-Score: {results['f1_score']:.4f}")
         print(f"Model saved: {results['model_path']}")
         print(f"Tracking: {results['tracking_type'].upper()}")
+        print(f"Local artifacts: {results['local_artifacts_dir']}")
         
         print("\nArtifacts generated:")
-        print("  - trained_model_ci.pkl")
-        print("  - confusion_matrix_ci.png")
-        print("  - feature_importance_ci.png")
-        print("  - classification_report_ci.txt")
+        print("  MLflow Tracked:")
+        print("    - Model (registered)")
+        print("    - Metrics and parameters")
+        print("    - All visualization files")
+        print("  Local Backup:")
+        print("    - trained_model_ci.pkl")
+        print("    - confusion_matrix_ci.png")
+        print("    - feature_importance_ci.png")
+        print("    - classification_report_ci.txt")
+        print("    - training_summary.md")
         
-        if results['tracking_type'] == 'local':
-            print("\n⚠️  Note: Used local tracking due to DagsHub connection issues")
-            print("   Check the 'mlruns' directory for experiment data")
+        if results['tracking_type'] == 'remote':
+            print("\n✅ Remote tracking active - check DagsHub for full experiment data")
+            print("📁 Local backups available for offline access")
+        else:
+            print("\n📁 Local tracking active - run 'mlflow ui' to view experiments")
         
         # Return exit code 0 for successful completion
         sys.exit(0)
