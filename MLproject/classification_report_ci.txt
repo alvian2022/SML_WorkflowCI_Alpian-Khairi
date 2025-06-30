@@ -1,0 +1,19 @@
+CLASSIFICATION REPORT - CI/CD TRAINING
+==================================================
+Author: alpian_khairi_C1BO
+Training Type: MLProject CI/CD Workflow
+Timestamp: 2025-07-01T04:41:32.679179
+Model: Random Forest
+Parameters: n_estimators=100, max_depth=10
+Tracking: Remote (DagsHub)
+==================================================
+
+              precision    recall  f1-score   support
+
+      Setosa       1.00      1.00      1.00        10
+  Versicolor       0.90      0.90      0.90        10
+   Virginica       0.90      0.90      0.90        10
+
+    accuracy                           0.93        30
+   macro avg       0.93      0.93      0.93        30
+weighted avg       0.93      0.93      0.93        30

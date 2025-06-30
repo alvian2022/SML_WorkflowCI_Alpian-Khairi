@@ -1,0 +1,206 @@
+name: MLflow CI/CD Model Training
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'MLProject/**'
+      - '.github/workflows/**'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      experiment_name:
+        description: 'MLflow experiment name'
+        required: false
+        default: 'iris_classification_ci_alpian_khairi'
+      n_estimators:
+        description: 'Number of estimators'
+        required: false
+        default: '100'
+      max_depth:
+        description: 'Maximum depth'
+        required: false
+        default: '10'
+
+jobs:
+  model-training:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        
+    - name: Setup Miniconda
+      uses: conda-incubator/setup-miniconda@v2
+      with:
+        miniconda-version: "latest"
+        activate-environment: iris-classification-env
+        environment-file: MLProject/conda.yaml
+        python-version: 3.9
+        auto-activate-base: false
+        
+    - name: Install MLflow
+      shell: bash -l {0}
+      run: |
+        conda activate iris-classification-env
+        pip install mlflow
+        mlflow --version
+        
+    - name: Verify MLProject structure
+      run: |
+        echo "Checking MLProject structure..."
+        ls -la MLProject/
+        echo "MLProject content:"
+        cat MLProject/MLProject
+        echo "Conda environment:"
+        cat MLProject/conda.yaml
+        
+    - name: Set up environment variables
+      run: |
+        echo "DAGSHUB_TOKEN=${{ secrets.DAGSHUB_TOKEN }}" >> $GITHUB_ENV
+        echo "MLFLOW_TRACKING_USERNAME=alvian2022" >> $GITHUB_ENV
+        echo "MLFLOW_TRACKING_PASSWORD=${{ secrets.DAGSHUB_TOKEN }}" >> $GITHUB_ENV
+        
+    - name: Run MLflow Project Training
+      shell: bash -l {0}
+      run: |
+        conda activate iris-classification-env
+        cd MLProject
+        echo "Running MLflow project..."
+        mlflow run . \
+          --experiment-name "${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" \
+          -P n_estimators=${{ github.event.inputs.n_estimators || 100 }} \
+          -P max_depth=${{ github.event.inputs.max_depth || 10 }} \
+          --env-manager conda
+          
+    - name: Upload training artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: model-artifacts-${{ github.run_number }}
+        path: |
+          MLProject/trained_model_ci.pkl
+          MLProject/confusion_matrix_ci.png
+          MLProject/feature_importance_ci.png
+          MLProject/classification_report_ci.txt
+        retention-days: 30
+        
+    - name: Create model summary
+      shell: bash -l {0}
+      run: |
+        conda activate iris-classification-env
+        cd MLProject
+        echo "# Model Training Summary" > model_summary.md
+        echo "**Author:** alpian_khairi_C1BO" >> model_summary.md
+        echo "**Date:** $(date)" >> model_summary.md
+        echo "**Git Commit:** ${{ github.sha }}" >> model_summary.md
+        echo "**Workflow Run:** ${{ github.run_number }}" >> model_summary.md
+        echo "" >> model_summary.md
+        echo "## Parameters" >> model_summary.md
+        echo "- N Estimators: ${{ github.event.inputs.n_estimators || 100 }}" >> model_summary.md
+        echo "- Max Depth: ${{ github.event.inputs.max_depth || 10 }}" >> model_summary.md
+        echo "- Experiment: ${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" >> model_summary.md
+        echo "" >> model_summary.md
+        echo "## Files Generated" >> model_summary.md
+        echo "- trained_model_ci.pkl" >> model_summary.md
+        echo "- confusion_matrix_ci.png" >> model_summary.md
+        echo "- feature_importance_ci.png" >> model_summary.md
+        echo "- classification_report_ci.txt" >> model_summary.md
+        
+    - name: Upload model summary
+      uses: actions/upload-artifact@v3
+      with:
+        name: model-summary-${{ github.run_number }}
+        path: MLProject/model_summary.md
+        retention-days: 30
+        
+    # Advanced: Push artifacts to repository (for Advanced level)
+    - name: Commit and push artifacts to repository
+      if: github.ref == 'refs/heads/main'
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        # Create artifacts directory if it doesn't exist
+        mkdir -p model_artifacts
+        
+        # Copy artifacts
+        cp MLProject/trained_model_ci.pkl model_artifacts/ || echo "Model file not found"
+        cp MLProject/confusion_matrix_ci.png model_artifacts/ || echo "Confusion matrix not found"
+        cp MLProject/feature_importance_ci.png model_artifacts/ || echo "Feature importance not found"
+        cp MLProject/classification_report_ci.txt model_artifacts/ || echo "Classification report not found"
+        cp MLProject/model_summary.md model_artifacts/ || echo "Model summary not found"
+        
+        # Add timestamp to artifacts
+        echo "$(date)" > model_artifacts/last_training.txt
+        
+        # Commit if there are changes
+        git add model_artifacts/
+        git diff --staged --quiet || (git commit -m "🤖 Auto-update model artifacts from CI/CD [skip ci]" && git push)
+
+  # Advanced: Build Docker image (for Advanced level)
+  docker-build:
+    needs: model-training
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Download model artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: model-artifacts-${{ github.run_number }}
+        path: MLProject/
+        
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        
+    - name: Install MLflow
+      run: |
+        pip install mlflow
+        
+    - name: Build Docker image with MLflow
+      run: |
+        cd MLProject
+        echo "Building Docker image..."
+        mlflow models build-docker \
+          --model-uri models:/iris_classifier_ci/latest \
+          --name "iris-classifier-ci" \
+          --enable-mlserver || echo "Docker build failed, continuing..."
+          
+    - name: Login to Docker Hub
+      if: success()
+      uses: docker/login-action@v2
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+        
+    - name: Tag and push Docker image
+      if: success()
+      run: |
+        docker tag iris-classifier-ci:latest ${{ secrets.DOCKER_USERNAME }}/iris-classifier-ci:latest
+        docker tag iris-classifier-ci:latest ${{ secrets.DOCKER_USERNAME }}/iris-classifier-ci:${{ github.run_number }}
+        docker push ${{ secrets.DOCKER_USERNAME }}/iris-classifier-ci:latest
+        docker push ${{ secrets.DOCKER_USERNAME }}/iris-classifier-ci:${{ github.run_number }}
+        
+    - name: Create Docker Hub link file
+      if: success()
+      run: |
+        echo "https://hub.docker.com/r/${{ secrets.DOCKER_USERNAME }}/iris-classifier-ci" > MLProject/Tautan_ke_Docker_Hub.txt
+        
+    - name: Upload Docker Hub link
+      if: success()
+      uses: actions/upload-artifact@v3
+      with:
+        name: docker-hub-link-${{ github.run_number }}
+        path: MLProject/Tautan_ke_Docker_Hub.txt
+        retention-days: 30

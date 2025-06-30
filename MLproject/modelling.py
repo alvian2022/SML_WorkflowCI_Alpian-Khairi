@@ -1,111 +1,467 @@
-# modelling.py (for MLProject)
 """
-MLProject Entry Point for Model Training
+MLProject modelling.py
+CI/CD Model Training for MLflow Project
 Author: alpian_khairi_C1BO
-Description: Configurable model training for MLflow Projects
+Description: Automated model training for CI/CD workflow with improved error handling
 """
 
-import sys
-import os
 import mlflow
 import mlflow.sklearn
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-import logging
 import argparse
+import os
+import sys
+import logging
+import time
+from datetime import datetime
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import (accuracy_score, precision_score, recall_score, 
+                           f1_score, classification_report, confusion_matrix)
+import matplotlib.pyplot as plt
+import seaborn as sns
+import joblib
+import dagshub
+from dotenv import load_dotenv
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-logging.basicConfig(level=logging.INFO)
+# Load environment variables
+load_dotenv()
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def load_data(data_path):
-    """Load preprocessed data"""
-    logger.info(f"Loading data from {data_path}")
-    df = pd.read_csv(data_path)
-    X = df.drop('target', axis=1)
-    y = df['target']
-    return train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+class MLProjectTrainer:
+    """MLProject model trainer for CI/CD workflow with improved error handling"""
+    
+    def __init__(self, args):
+        """Initialize trainer with arguments"""
+        self.args = args
+        self.model = None
+        self.target_names = ['Setosa', 'Versicolor', 'Virginica']
+        self.use_remote_tracking = False
+        self.setup_mlflow()
+    
+    def test_dagshub_connection(self, timeout=10):
+        """Test connection to DagsHub with retry mechanism"""
+        try:
+            # Configure requests session with retry strategy
+            session = requests.Session()
+            retry_strategy = Retry(
+                total=3,
+                backoff_factor=1,
+                status_forcelist=[429, 500, 502, 503, 504],
+            )
+            adapter = HTTPAdapter(max_retries=retry_strategy)
+            session.mount("http://", adapter)
+            session.mount("https://", adapter)
+            
+            # Test connection to DagsHub
+            dagshub_url = "https://dagshub.com/alvian2022/iris-classification"
+            response = session.get(dagshub_url, timeout=timeout)
+            
+            if response.status_code == 200:
+                logger.info("✅ DagsHub connection test successful")
+                return True
+            else:
+                logger.warning(f"⚠️ DagsHub returned status code: {response.status_code}")
+                return False
+                
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"⚠️ DagsHub connection test failed: {str(e)}")
+            return False
+        except Exception as e:
+            logger.warning(f"⚠️ Unexpected error testing DagsHub connection: {str(e)}")
+            return False
+    
+    def setup_mlflow(self):
+        """Setup MLflow tracking with fallback to local tracking"""
+        try:
+            # Check if DagsHub token is available
+            dagshub_token = os.getenv('DAGSHUB_TOKEN')
+            
+            if dagshub_token and self.test_dagshub_connection():
+                try:
+                    # DagsHub configuration
+                    dagshub_repo_owner = "alvian2022"
+                    dagshub_repo_name = "iris-classification"
+                    
+                    # Initialize DagsHub with timeout
+                    logger.info("Initializing DagsHub connection...")
+                    
+                    # Set timeouts for MLflow
+                    os.environ["MLFLOW_HTTP_REQUEST_TIMEOUT"] = "30"
+                    os.environ["MLFLOW_HTTP_REQUEST_MAX_RETRIES"] = "3"
+                    
+                    dagshub.init(
+                        repo_owner=dagshub_repo_owner, 
+                        repo_name=dagshub_repo_name, 
+                        mlflow=True
+                    )
+                    
+                    mlflow_tracking_uri = f"https://dagshub.com/{dagshub_repo_owner}/{dagshub_repo_name}.mlflow"
+                    mlflow.set_tracking_uri(mlflow_tracking_uri)
+                    
+                    # Set authentication
+                    os.environ["MLFLOW_TRACKING_USERNAME"] = dagshub_repo_owner
+                    os.environ["MLFLOW_TRACKING_PASSWORD"] = dagshub_token
+                    
+                    # Test MLflow connection
+                    try:
+                        mlflow.get_tracking_uri()
+                        self.use_remote_tracking = True
+                        logger.info(f"✅ DagsHub tracking setup successful: {mlflow_tracking_uri}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ MLflow connection test failed: {str(e)}")
+                        raise e
+                        
+                except Exception as e:
+                    logger.warning(f"⚠️ DagsHub setup failed: {str(e)}")
+                    logger.info("Falling back to local MLflow tracking...")
+                    self.setup_local_tracking()
+            else:
+                logger.info("ℹ️ DagsHub token not available or connection failed, using local MLflow tracking")
+                self.setup_local_tracking()
+            
+            # Set experiment with retry mechanism
+            self.setup_experiment()
+            
+        except Exception as e:
+            logger.error(f"Error setting up MLflow: {str(e)}")
+            logger.info("Falling back to local MLflow tracking")
+            self.setup_local_tracking()
+    
+    def setup_local_tracking(self):
+        """Setup local MLflow tracking"""
+        try:
+            # Create local mlruns directory
+            os.makedirs("mlruns", exist_ok=True)
+            mlflow.set_tracking_uri("file:./mlruns")
+            self.use_remote_tracking = False
+            logger.info("✅ Local MLflow tracking setup completed")
+        except Exception as e:
+            logger.error(f"Error setting up local tracking: {str(e)}")
+    
+    def setup_experiment(self):
+        """Setup MLflow experiment with retry mechanism"""
+        max_retries = 3
+        retry_delay = 2
+        
+        for attempt in range(max_retries):
+            try:
+                mlflow.set_experiment(self.args.experiment_name)
+                logger.info(f"✅ Experiment set: {self.args.experiment_name}")
+                return
+            except Exception as e:
+                logger.warning(f"Attempt {attempt + 1}/{max_retries} to set experiment failed: {str(e)}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    logger.error("Failed to set experiment after all retries")
+                    raise e
+    
+    def load_data(self):
+        """Load and prepare data"""
+        try:
+            logger.info(f"Loading data from {self.args.data_path}")
+            
+            if not os.path.exists(self.args.data_path):
+                logger.warning(f"Data file {self.args.data_path} not found. Creating sample data...")
+                self.create_sample_data()
+            
+            df = pd.read_csv(self.args.data_path)
+            
+            # Separate features and target
+            X = df.drop('target', axis=1)
+            y = df['target']
+            
+            logger.info(f"Data loaded successfully: {X.shape[0]} samples, {X.shape[1]} features")
+            
+            # Split data
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=0.2, random_state=self.args.random_state, stratify=y
+            )
+            
+            return X_train, X_test, y_train, y_test
+            
+        except Exception as e:
+            logger.error(f"Error loading data: {str(e)}")
+            raise
+    
+    def create_sample_data(self):
+        """Create sample iris data if not available"""
+        try:
+            from sklearn.datasets import load_iris
+            iris = load_iris()
+            df = pd.DataFrame(iris.data, columns=iris.feature_names)
+            df['target'] = iris.target
+            df.to_csv(self.args.data_path, index=False)
+            logger.info(f"Sample data created: {self.args.data_path}")
+        except Exception as e:
+            logger.error(f"Error creating sample data: {str(e)}")
+            raise
+    
+    def safe_mlflow_operation(self, operation, *args, **kwargs):
+        """Execute MLflow operation with retry mechanism"""
+        max_retries = 3
+        retry_delay = 1
+        
+        for attempt in range(max_retries):
+            try:
+                return operation(*args, **kwargs)
+            except Exception as e:
+                logger.warning(f"MLflow operation failed (attempt {attempt + 1}/{max_retries}): {str(e)}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    if self.use_remote_tracking:
+                        logger.warning("Remote tracking failed, switching to local tracking")
+                        self.setup_local_tracking()
+                        self.setup_experiment()
+                        return operation(*args, **kwargs)
+                    else:
+                        raise e
+    
+    def train_model(self):
+        """Train model with MLflow tracking"""
+        try:
+            logger.info("Starting CI/CD model training...")
+            
+            # Load data
+            X_train, X_test, y_train, y_test = self.load_data()
+            
+            # Start MLflow run with retry mechanism
+            run = self.safe_mlflow_operation(
+                mlflow.start_run, 
+                run_name=f"ci_training_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            )
+            
+            with run:
+                # Log parameters
+                params = {
+                    "author": "alpian_khairi_C1BO",
+                    "training_type": "ci_cd_workflow",
+                    "data_path": self.args.data_path,
+                    "n_estimators": self.args.n_estimators,
+                    "max_depth": self.args.max_depth,
+                    "random_state": self.args.random_state,
+                    "timestamp": datetime.now().isoformat(),
+                    "mlproject_run": True,
+                    "tracking_type": "remote" if self.use_remote_tracking else "local"
+                }
+                
+                for key, value in params.items():
+                    self.safe_mlflow_operation(mlflow.log_param, key, value)
+                
+                # Initialize and train model
+                self.model = RandomForestClassifier(
+                    n_estimators=self.args.n_estimators,
+                    max_depth=self.args.max_depth,
+                    random_state=self.args.random_state
+                )
+                
+                logger.info("Training Random Forest model...")
+                self.model.fit(X_train, y_train)
+                
+                # Make predictions
+                y_pred = self.model.predict(X_test)
+                y_pred_proba = self.model.predict_proba(X_test)
+                
+                # Calculate metrics
+                accuracy = accuracy_score(y_test, y_pred)
+                precision = precision_score(y_test, y_pred, average='weighted')
+                recall = recall_score(y_test, y_pred, average='weighted')
+                f1 = f1_score(y_test, y_pred, average='weighted')
+                
+                # Log metrics
+                metrics = {
+                    "accuracy": accuracy,
+                    "precision": precision,
+                    "recall": recall,
+                    "f1_score": f1,
+                    "training_samples": len(X_train),
+                    "test_samples": len(X_test)
+                }
+                
+                for key, value in metrics.items():
+                    self.safe_mlflow_operation(mlflow.log_metric, key, value)
+                
+                # Create and log visualizations
+                self.create_visualizations(y_test, y_pred, y_pred_proba)
+                
+                # Log classification report
+                self.log_classification_report(y_test, y_pred)
+                
+                # Log model
+                try:
+                    self.safe_mlflow_operation(
+                        mlflow.sklearn.log_model,
+                        self.model, 
+                        "model",
+                        registered_model_name=self.args.model_name
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to register model: {str(e)}")
+                    # Still log the model without registration
+                    self.safe_mlflow_operation(mlflow.sklearn.log_model, self.model, "model")
+                
+                # Save model locally for CI artifacts
+                joblib.dump(self.model, "trained_model_ci.pkl")
+                self.safe_mlflow_operation(mlflow.log_artifact, "trained_model_ci.pkl")
+                
+                logger.info("Model training completed successfully!")
+                logger.info(f"Accuracy: {accuracy:.4f}")
+                logger.info(f"Precision: {precision:.4f}")
+                logger.info(f"Recall: {recall:.4f}")
+                logger.info(f"F1-Score: {f1:.4f}")
+                logger.info(f"Tracking Type: {'Remote (DagsHub)' if self.use_remote_tracking else 'Local'}")
+                
+                return {
+                    'accuracy': accuracy,
+                    'precision': precision,
+                    'recall': recall,
+                    'f1_score': f1,
+                    'model_path': "trained_model_ci.pkl",
+                    'tracking_type': 'remote' if self.use_remote_tracking else 'local'
+                }
+                
+        except Exception as e:
+            logger.error(f"Error during model training: {str(e)}")
+            raise
+    
+    def create_visualizations(self, y_test, y_pred, y_pred_proba):
+        """Create and log visualizations"""
+        
+        # Confusion Matrix
+        plt.figure(figsize=(8, 6))
+        cm = confusion_matrix(y_test, y_pred)
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                   xticklabels=self.target_names,
+                   yticklabels=self.target_names)
+        plt.title('Confusion Matrix - CI/CD Training\nAuthor: alpian_khairi_C1BO')
+        plt.ylabel('Actual')
+        plt.xlabel('Predicted')
+        plt.tight_layout()
+        plt.savefig('confusion_matrix_ci.png', dpi=300, bbox_inches='tight')
+        self.safe_mlflow_operation(mlflow.log_artifact, 'confusion_matrix_ci.png')
+        plt.close()
+        
+        # Feature Importance
+        plt.figure(figsize=(10, 6))
+        feature_names = ['sepal length', 'sepal width', 'petal length', 'petal width']
+        importances = self.model.feature_importances_
+        indices = np.argsort(importances)[::-1]
+        
+        plt.bar(range(len(importances)), importances[indices])
+        plt.xticks(range(len(importances)), [feature_names[i] for i in indices], rotation=45)
+        plt.title('Feature Importance - CI/CD Training\nAuthor: alpian_khairi_C1BO')
+        plt.ylabel('Importance')
+        plt.tight_layout()
+        plt.savefig('feature_importance_ci.png', dpi=300, bbox_inches='tight')
+        self.safe_mlflow_operation(mlflow.log_artifact, 'feature_importance_ci.png')
+        plt.close()
+        
+        logger.info("Visualizations created and logged")
+    
+    def log_classification_report(self, y_test, y_pred):
+        """Log classification report"""
+        
+        report_text = classification_report(y_test, y_pred, 
+                                          target_names=self.target_names)
+        
+        with open('classification_report_ci.txt', 'w') as f:
+            f.write("CLASSIFICATION REPORT - CI/CD TRAINING\n")
+            f.write("="*50 + "\n")
+            f.write(f"Author: alpian_khairi_C1BO\n")
+            f.write(f"Training Type: MLProject CI/CD Workflow\n")
+            f.write(f"Timestamp: {datetime.now().isoformat()}\n")
+            f.write(f"Model: Random Forest\n")
+            f.write(f"Parameters: n_estimators={self.args.n_estimators}, max_depth={self.args.max_depth}\n")
+            f.write(f"Tracking: {'Remote (DagsHub)' if self.use_remote_tracking else 'Local'}\n")
+            f.write("="*50 + "\n\n")
+            f.write(report_text)
+        
+        self.safe_mlflow_operation(mlflow.log_artifact, 'classification_report_ci.txt')
 
-def train_model(data_path, model_type="random_forest", use_tuning=True):
-    """Train model based on configuration"""
-    # MLflow Project automatically logs the entry point parameters
-    # We only log additional parameters that aren't already logged
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description='MLProject Model Training')
     
-    # Log additional parameters (not duplicating entry point parameters)
-    mlflow.log_param("author", "alpian_khairi_C1BO")
+    parser.add_argument('--data_path', type=str, default='iris_preprocessing.csv',
+                       help='Path to preprocessed data')
+    parser.add_argument('--experiment_name', type=str, 
+                       default='iris_classification_ci_alpian_khairi',
+                       help='MLflow experiment name')
+    parser.add_argument('--model_name', type=str, default='iris_classifier_ci',
+                       help='Registered model name')
+    parser.add_argument('--n_estimators', type=int, default=100,
+                       help='Number of trees in random forest')
+    parser.add_argument('--max_depth', type=int, default=10,
+                       help='Maximum depth of trees')
+    parser.add_argument('--random_state', type=int, default=42,
+                       help='Random state for reproducibility')
     
-    # Load data
-    X_train, X_test, y_train, y_test = load_data(data_path)
-    
-    # Configure model
-    if model_type == "random_forest":
-        if use_tuning:
-            # Hyperparameter tuning
-            param_grid = {
-               'n_estimators': [50, 100, 200],
-               'max_depth': [3, 5, 7, None],
-               'min_samples_split': [2, 5, 10]
-            }
-            rf = RandomForestClassifier(random_state=42)
-            grid_search = GridSearchCV(rf, param_grid, cv=5, scoring='accuracy')
-            grid_search.fit(X_train, y_train)
-            model = grid_search.best_estimator_
-            mlflow.log_params(grid_search.best_params_)
-            mlflow.log_metric("best_cv_score", grid_search.best_score_)
-        else:
-            model = RandomForestClassifier(n_estimators=100, random_state=42)
-            model.fit(X_train, y_train)
-    else:
-        raise ValueError(f"Unsupported model type: {model_type}")
-    
-    # Make predictions
-    y_pred = model.predict(X_test)
-    
-    # Calculate and log metrics
-    accuracy = accuracy_score(y_test, y_pred)
-    precision = precision_score(y_test, y_pred, average='weighted')
-    recall = recall_score(y_test, y_pred, average='weighted')
-    f1 = f1_score(y_test, y_pred, average='weighted')
-    
-    mlflow.log_metric("accuracy", accuracy)
-    mlflow.log_metric("precision", precision)
-    mlflow.log_metric("recall", recall)
-    mlflow.log_metric("f1_score", f1)
-    
-    # Log model
-    mlflow.sklearn.log_model(model, "model")
-    
-    logger.info(f"Model training completed - Accuracy: {accuracy:.4f}")
-    
-    return model
+    return parser.parse_args()
 
 def main():
-    """Main function for MLProject entry point"""
-    parser = argparse.ArgumentParser(description='Train Iris Classification Model')
-    parser.add_argument('data_path', type=str, help='Path to preprocessed data')
-    parser.add_argument('model_type', type=str, default='random_forest', 
-                       help='Type of model to train')
-    parser.add_argument('use_tuning', type=str, default='true', 
-                       help='Whether to use hyperparameter tuning')
+    """Main function"""
+    print("="*60)
+    print("MLPROJECT CI/CD MODEL TRAINING")
+    print("Author: alpian_khairi_C1BO")
+    print("Version: 2.0 (Enhanced Error Handling)")
+    print("="*60)
     
-    args = parser.parse_args()
-    
-    # Convert string boolean to actual boolean
-    use_tuning = args.use_tuning.lower() in ['true', '1', 'yes', 'on']
-    
-    print(f"Starting MLProject training...")
-    print(f"Author: alpian_khairi_C1BO")
-    print(f"Data path: {args.data_path}")
-    print(f"Model type: {args.model_type}")
-    print(f"Use tuning: {use_tuning}")
-    
-    # Don't set experiment here - MLflow Project will handle it
-    # mlflow.set_experiment("iris_mlproject_alpian_khairi")
-    
-    model = train_model(args.data_path, args.model_type, use_tuning)
-    print("MLProject training completed successfully!")
+    try:
+        # Parse arguments
+        args = parse_arguments()
+        
+        logger.info(f"Starting training with parameters:")
+        logger.info(f"  Data path: {args.data_path}")
+        logger.info(f"  Experiment: {args.experiment_name}")
+        logger.info(f"  Model name: {args.model_name}")
+        logger.info(f"  N estimators: {args.n_estimators}")
+        logger.info(f"  Max depth: {args.max_depth}")
+        logger.info(f"  Random state: {args.random_state}")
+        
+        # Initialize trainer
+        trainer = MLProjectTrainer(args)
+        
+        # Train model
+        results = trainer.train_model()
+        
+        print("\n" + "="*60)
+        print("CI/CD TRAINING COMPLETED SUCCESSFULLY!")
+        print("="*60)
+        print(f"Accuracy: {results['accuracy']:.4f}")
+        print(f"Precision: {results['precision']:.4f}")
+        print(f"Recall: {results['recall']:.4f}")
+        print(f"F1-Score: {results['f1_score']:.4f}")
+        print(f"Model saved: {results['model_path']}")
+        print(f"Tracking: {results['tracking_type'].upper()}")
+        
+        print("\nArtifacts generated:")
+        print("  - trained_model_ci.pkl")
+        print("  - confusion_matrix_ci.png")
+        print("  - feature_importance_ci.png")
+        print("  - classification_report_ci.txt")
+        
+        if results['tracking_type'] == 'local':
+            print("\n⚠️  Note: Used local tracking due to DagsHub connection issues")
+            print("   Check the 'mlruns' directory for experiment data")
+        
+        # Return exit code 0 for successful completion
+        sys.exit(0)
+        
+    except Exception as e:
+        logger.error(f"Training failed: {str(e)}")
+        print(f"ERROR: Training failed - {str(e)}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
