@@ -1,0 +1,11 @@
+name: iris_classification_project
+
+conda_env: conda.yaml
+
+entry_points:
+  main:
+    parameters:
+      data_path: {type: str, default: "iris_preprocessing.csv"}
+      model_type: {type: str, default: "random_forest"}
+      use_tuning: {type: str, default: "true"}
+    command: "python modelling.py {data_path} {model_type} {use_tuning}"

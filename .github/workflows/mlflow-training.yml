@@ -1,0 +1,210 @@
+# .github/workflows/mlflow-training.yml
+name: MLflow CI/CD Pipeline - alpian_khairi_C1BO
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      model_type:
+        description: 'Model type to train'
+        required: true
+        default: 'random_forest'
+        type: choice
+        options:
+        - random_forest
+      use_tuning:
+        description: 'Use hyperparameter tuning'
+        required: true
+        default: true
+        type: boolean
+
+env:
+  MLFLOW_TRACKING_URI: file:./mlruns
+  
+jobs:
+  train-model:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/conda.yaml') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+          
+    - name: Install MLflow and dependencies
+      run: |
+        pip install mlflow==2.8.1
+        pip install pandas scikit-learn numpy matplotlib seaborn joblib
+        
+    - name: Verify data file
+      run: |
+        if [ ! -f "MLProject/iris_preprocessing.csv" ]; then
+          echo "Preprocessed data not found, creating sample data..."
+          python -c "
+          import pandas as pd
+          import numpy as np
+          from sklearn.datasets import load_iris
+          from sklearn.preprocessing import StandardScaler
+          
+          iris = load_iris()
+          X = pd.DataFrame(iris.data, columns=iris.feature_names)
+          scaler = StandardScaler()
+          X_scaled = scaler.fit_transform(X)
+          df = pd.DataFrame(X_scaled, columns=iris.feature_names)
+          df['target'] = iris.target
+          df.to_csv('MLProject/iris_preprocessing.csv', index=False)
+          print('Sample data created')
+          "
+        fi
+        
+    - name: Run MLflow Project
+      run: |
+        cd MLProject
+        mlflow run . \
+          -P data_path=iris_preprocessing.csv \
+          -P model_type=${{ github.event.inputs.model_type || 'random_forest' }} \
+          -P use_tuning=${{ github.event.inputs.use_tuning || 'true' }}
+          
+    - name: List MLflow artifacts
+      run: |
+        echo "MLflow runs created:"
+        ls -la mlruns/
+        if [ -d "mlruns/0" ]; then
+          echo "Experiment 0 runs:"
+          ls -la mlruns/0/
+        fi
+        
+    - name: Archive MLflow artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: mlflow-artifacts-${{ github.sha }}
+        path: |
+          mlruns/
+          *.png
+          *.csv
+          *.txt
+        retention-days: 30
+        
+    - name: Build Docker image (Advanced)
+      if: success() && github.ref == 'refs/heads/main'
+      run: |
+        # Find the latest model run
+        LATEST_RUN=$(ls -t mlruns/0/ | head -n 1)
+        echo "Latest run: $LATEST_RUN"
+        
+        # Build Docker image with MLflow
+        mlflow models build-docker \
+          -m mlruns/0/$LATEST_RUN/artifacts/model \
+          -n alpian-khairi/iris-model:${{ github.sha }} \
+          -n alpian-khairi/iris-model:latest
+          
+        echo "Docker image built successfully"
+        echo "Image tags:"
+        echo "  - alpian-khairi/iris-model:${{ github.sha }}"
+        echo "  - alpian-khairi/iris-model:latest"
+        
+    - name: Push to Docker Hub (Advanced)
+      if: success() && github.ref == 'refs/heads/main' && env.DOCKER_USERNAME != ''
+      run: |
+        echo ${{ secrets.DOCKER_PASSWORD }} | docker login -u ${{ secrets.DOCKER_USERNAME }} --password-stdin
+        docker push alpian-khairi/iris-model:${{ github.sha }}
+        docker push alpian-khairi/iris-model:latest
+        echo "Docker images pushed to Docker Hub"
+        
+    - name: Save Docker image info
+      if: success() && github.ref == 'refs/heads/main'
+      run: |
+        echo "alpian-khairi/iris-model:${{ github.sha }}" > docker_image_tag.txt
+        echo "Docker Hub: https://hub.docker.com/r/alpian-khairi/iris-model" >> docker_info.txt
+        echo "Pull command: docker pull alpian-khairi/iris-model:latest" >> docker_info.txt
+        
+    - name: Create deployment artifact
+      if: success()
+      run: |
+        mkdir -p deployment
+        cp -r mlruns deployment/
+        echo "Deployment ready for model serving" > deployment/README.txt
+        echo "Model trained by: alpian_khairi_C1BO" >> deployment/README.txt
+        echo "Training time: $(date)" >> deployment/README.txt
+        
+    - name: Upload deployment artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: model-deployment-${{ github.sha }}
+        path: deployment/
+        retention-days: 90
+
+  test-model:
+    needs: train-model
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        
+    - name: Install dependencies
+      run: |
+        pip install mlflow pandas scikit-learn numpy requests
+        
+    - name: Download artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: mlflow-artifacts-${{ github.sha }}
+        
+    - name: Test model serving
+      run: |
+        # Start model serving in background
+        LATEST_RUN=$(ls -t mlruns/0/ | head -n 1)
+        mlflow models serve -m mlruns/0/$LATEST_RUN/artifacts/model -p 5000 &
+        SERVER_PID=$!
+        
+        # Wait for server to start
+        sleep 30
+        
+        # Test prediction
+        python -c "
+        import requests
+        import json
+        import time
+        
+        # Test data
+        test_data = {
+            'inputs': [[5.1, 3.5, 1.4, 0.2]]
+        }
+        
+        try:
+            response = requests.post('http://localhost:5000/invocations', 
+                                   json=test_data, timeout=10)
+            if response.status_code == 200:
+                print('✓ Model serving test passed')
+                print('Response:', response.json())
+            else:
+                print('✗ Model serving test failed')
+                print('Status:', response.status_code)
+                exit(1)
+        except Exception as e:
+            print('✗ Model serving test failed with exception:', e)
+            exit(1)
+        "
+        
+        # Stop server
+        kill $SERVER_PID
