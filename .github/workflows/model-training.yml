@@ -1,4 +1,4 @@
-name: MLflow CI/CD Model Training - Fixed
+name: MLflow CI/CD Model Training
 
 on:
   push:
@@ -56,21 +56,10 @@ jobs:
       run: |
         echo "Checking MLProject structure..."
         ls -la MLProject/
-        if [ -f "MLProject/MLProject" ]; then
-          echo "MLProject file found:"
-          cat MLProject/MLProject
-        else
-          echo "ERROR: MLProject file not found!"
-          exit 1
-        fi
-        
-        if [ -f "MLProject/conda.yaml" ]; then
-          echo "Conda environment file found:"
-          cat MLProject/conda.yaml
-        else
-          echo "ERROR: conda.yaml not found!"
-          exit 1
-        fi
+        echo "MLProject file:"
+        cat MLProject/MLProject || echo "MLProject file not found"
+        echo "Conda environment:"
+        cat MLProject/conda.yaml || echo "conda.yaml not found"
         
     - name: Set up environment variables
       run: |
@@ -78,48 +67,23 @@ jobs:
         echo "MLFLOW_TRACKING_USERNAME=alvian2022" >> $GITHUB_ENV
         echo "MLFLOW_TRACKING_PASSWORD=${{ secrets.DAGSHUB_TOKEN }}" >> $GITHUB_ENV
         
-    - name: Test Python environment
-      shell: bash -l {0}
-      run: |
-        conda activate iris-classification-env
-        python --version
-        pip list | grep -E "(mlflow|pandas|scikit-learn)" || echo "Packages will be installed by conda"
-        
     - name: Run MLflow Project Training
       shell: bash -l {0}
       run: |
         conda activate iris-classification-env
         cd MLProject
         echo "Running MLflow project..."
-        
-        # Check if modelling.py exists
-        if [ ! -f "modelling.py" ]; then
-          echo "ERROR: modelling.py not found!"
-          ls -la
-          exit 1
-        fi
-        
-        # Run MLflow project
         mlflow run . \
           --experiment-name "${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" \
           -P n_estimators=${{ github.event.inputs.n_estimators || 100 }} \
           -P max_depth=${{ github.event.inputs.max_depth || 10 }} \
           --env-manager conda
           
-    - name: Verify artifacts creation
+    - name: Verify artifacts
       run: |
         cd MLProject
-        echo "=== CHECKING GENERATED ARTIFACTS ==="
-        ls -la
-        
-        echo "=== CHECKING FOR SPECIFIC FILES ==="
-        for file in "trained_model_ci.pkl" "confusion_matrix_ci.png" "feature_importance_ci.png" "classification_report_ci.txt"; do
-          if [ -f "$file" ]; then
-            echo "✅ Found: $file"
-          else
-            echo "❌ Missing: $file"
-          fi
-        done
+        echo "Generated artifacts:"
+        ls -la *.pkl *.png *.txt *.md 2>/dev/null || echo "No artifacts found"
         
     - name: Upload training artifacts
       uses: actions/upload-artifact@v4
@@ -133,59 +97,18 @@ jobs:
         retention-days: 30
         if-no-files-found: warn
         
-    - name: Create model summary
+    - name: Create simple summary
       run: |
         cd MLProject
-        echo "# Model Training Summary" > model_summary.md
-        echo "**Author:** alpian_khairi_C1BO" >> model_summary.md
-        echo "**Date:** $(date)" >> model_summary.md
-        echo "**Git Commit:** ${{ github.sha }}" >> model_summary.md
-        echo "**Workflow Run:** ${{ github.run_number }}" >> model_summary.md
-        echo "" >> model_summary.md
-        echo "## Parameters" >> model_summary.md
-        echo "- N Estimators: ${{ github.event.inputs.n_estimators || 100 }}" >> model_summary.md
-        echo "- Max Depth: ${{ github.event.inputs.max_depth || 10 }}" >> model_summary.md
-        echo "- Experiment: ${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" >> model_summary.md
-        echo "" >> model_summary.md
-        echo "## Generated Files" >> model_summary.md
-        echo "$(ls -la *.pkl *.png *.txt 2>/dev/null || echo 'No artifacts found')" >> model_summary.md
+        echo "Training completed at $(date)" > summary.txt
+        echo "Workflow: ${{ github.run_number }}" >> summary.txt
+        echo "Commit: ${{ github.sha }}" >> summary.txt
+        echo "Parameters: n_estimators=${{ github.event.inputs.n_estimators || 100 }}, max_depth=${{ github.event.inputs.max_depth || 10 }}" >> summary.txt
         
-    - name: Upload model summary
+    - name: Upload summary
       uses: actions/upload-artifact@v4
       with:
-        name: model-summary-${{ github.run_number }}
-        path: MLProject/model_summary.md
+        name: training-summary-${{ github.run_number }}
+        path: MLProject/summary.txt
         retention-days: 30
         if-no-files-found: warn
-        
-    - name: Commit and push artifacts to repository
-      if: github.ref == 'refs/heads/main'
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        
-        # Create artifacts directory if it doesn't exist
-        mkdir -p model_artifacts
-        
-        # Copy artifacts with error handling
-        cp MLProject/trained_model_ci.pkl model_artifacts/ 2>/dev/null || echo "Model file not found"
-        cp MLProject/confusion_matrix_ci.png model_artifacts/ 2>/dev/null || echo "Confusion matrix not found"
-        cp MLProject/feature_importance_ci.png model_artifacts/ 2>/dev/null || echo "Feature importance not found"
-        cp MLProject/classification_report_ci.txt model_artifacts/ 2>/dev/null || echo "Classification report not found"
-        cp MLProject/model_summary.md model_artifacts/ 2>/dev/null || echo "Model summary not found"
-        
-        # Add timestamp to artifacts
-        echo "$(date)" > model_artifacts/last_training.txt
-        echo "Workflow: ${{ github.run_number }}" >> model_artifacts/last_training.txt
-        echo "Commit: ${{ github.sha }}" >> model_artifacts/last_training.txt
-        
-        # Commit if there are changes
-        git add model_artifacts/
-        git diff --staged --quiet || (git commit -m "🤖 Auto-update model artifacts from CI/CD [skip ci]
-
-📊 Training Summary:
-- Workflow: ${{ github.run_number }}
-- Parameters: n_estimators=${{ github.event.inputs.n_estimators || 100 }}, max_depth=${{ github.event.inputs.max_depth || 10 }}
-- Experiment: ${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}
-
-Author: alpian_khairi_C1BO" && git push)
