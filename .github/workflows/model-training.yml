@@ -1,4 +1,4 @@
-name: MLflow CI/CD Model Training - Enhanced
+name: MLflow CI/CD Model Training - Simple
 
 on:
   push:
@@ -22,15 +22,6 @@ on:
         description: 'Maximum depth'
         required: false
         default: '10'
-      tracking_mode:
-        description: 'Tracking mode (remote/local/dual)'
-        required: false
-        default: 'dual'
-        type: choice
-        options:
-          - remote
-          - local
-          - dual
 
 jobs:
   model-training:
@@ -65,43 +56,50 @@ jobs:
       run: |
         echo "Checking MLProject structure..."
         ls -la MLProject/
-        echo "MLProject content:"
-        cat MLProject/MLProject
-        echo "Conda environment:"
-        cat MLProject/conda.yaml
+        if [ -f "MLProject/MLProject" ]; then
+          echo "MLProject file found:"
+          cat MLProject/MLProject
+        else
+          echo "ERROR: MLProject file not found!"
+          exit 1
+        fi
+        
+        if [ -f "MLProject/conda.yaml" ]; then
+          echo "Conda environment file found:"
+          cat MLProject/conda.yaml
+        else
+          echo "ERROR: conda.yaml not found!"
+          exit 1
+        fi
         
     - name: Set up environment variables
       run: |
         echo "DAGSHUB_TOKEN=${{ secrets.DAGSHUB_TOKEN }}" >> $GITHUB_ENV
         echo "MLFLOW_TRACKING_USERNAME=alvian2022" >> $GITHUB_ENV
         echo "MLFLOW_TRACKING_PASSWORD=${{ secrets.DAGSHUB_TOKEN }}" >> $GITHUB_ENV
-        echo "TRACKING_MODE=${{ github.event.inputs.tracking_mode || 'dual' }}" >> $GITHUB_ENV
         
-    - name: Create local artifacts directory
+    - name: Test Python environment
+      shell: bash -l {0}
       run: |
-        mkdir -p MLProject/model_artifacts
-        mkdir -p MLProject/mlruns
-        echo "Local artifacts directory created"
+        conda activate iris-classification-env
+        python --version
+        pip list | grep -E "(mlflow|pandas|scikit-learn)"
         
     - name: Run MLflow Project Training
       shell: bash -l {0}
       run: |
         conda activate iris-classification-env
         cd MLProject
-        echo "Running MLflow project with enhanced artifact management..."
+        echo "Running MLflow project..."
         
-        # Set tracking mode based on input
-        if [ "${{ github.event.inputs.tracking_mode || 'dual' }}" = "local" ]; then
-          echo "Using LOCAL tracking mode"
-          export FORCE_LOCAL_TRACKING=true
-        elif [ "${{ github.event.inputs.tracking_mode || 'dual' }}" = "remote" ]; then
-          echo "Using REMOTE tracking mode"
-          export FORCE_LOCAL_TRACKING=false
-        else
-          echo "Using DUAL tracking mode (remote + local backups)"
-          export FORCE_LOCAL_TRACKING=false
+        # Check if modelling.py exists
+        if [ ! -f "modelling.py" ]; then
+          echo "ERROR: modelling.py not found!"
+          ls -la
+          exit 1
         fi
         
+        # Run MLflow project
         mlflow run . \
           --experiment-name "${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" \
           -P n_estimators=${{ github.event.inputs.n_estimators || 100 }} \
@@ -109,344 +107,52 @@ jobs:
           --env-manager conda
           
     - name: Verify artifacts creation
-      shell: bash -l {0}
       run: |
-        conda activate iris-classification-env
         cd MLProject
-        echo "=== ARTIFACT VERIFICATION ==="
-        echo "Root directory contents:"
+        echo "=== CHECKING GENERATED ARTIFACTS ==="
         ls -la
-        echo ""
-        echo "Model artifacts directory:"
-        ls -la model_artifacts/ || echo "No model_artifacts directory found"
-        echo ""
-        echo "MLruns directory:"
-        ls -la mlruns/ || echo "No mlruns directory found"
-        echo ""
-        echo "Generated files in root:"
-        find . -name "*.pkl" -o -name "*.png" -o -name "*.txt" -o -name "*.md" | head -10
-          
-    - name: Upload ALL training artifacts
+        
+        echo "=== CHECKING FOR SPECIFIC FILES ==="
+        for file in "trained_model_ci.pkl" "confusion_matrix_ci.png" "feature_importance_ci.png" "classification_report_ci.txt"; do
+          if [ -f "$file" ]; then
+            echo "✅ Found: $file"
+          else
+            echo "❌ Missing: $file"
+          fi
+        done
+        
+    - name: Upload training artifacts
       uses: actions/upload-artifact@v3
       with:
-        name: model-artifacts-complete-${{ github.run_number }}
+        name: model-artifacts-${{ github.run_number }}
         path: |
           MLProject/trained_model_ci.pkl
           MLProject/confusion_matrix_ci.png
           MLProject/feature_importance_ci.png
           MLProject/classification_report_ci.txt
-          MLProject/training_summary.md
-          MLProject/model_artifacts/
-          MLProject/mlruns/
-        retention-days: 30
-        
-    - name: Upload model artifacts separately
-      uses: actions/upload-artifact@v3
-      with:
-        name: model-files-${{ github.run_number }}
-        path: |
-          MLProject/model_artifacts/
         retention-days: 30
         if-no-files-found: warn
         
-    - name: Upload MLflow runs separately
-      uses: actions/upload-artifact@v3
-      with:
-        name: mlflow-runs-${{ github.run_number }}
-        path: |
-          MLProject/mlruns/
-        retention-days: 30
-        if-no-files-found: warn
-        
-    - name: Create enhanced model summary
-      shell: bash -l {0}
-      run: |
-        conda activate iris-classification-env
-        cd MLProject
-        echo "# Enhanced Model Training Summary" > model_summary_enhanced.md
-        echo "**Author:** alpian_khairi_C1BO" >> model_summary_enhanced.md
-        echo "**Date:** $(date)" >> model_summary_enhanced.md
-        echo "**Git Commit:** ${{ github.sha }}" >> model_summary_enhanced.md
-        echo "**Workflow Run:** ${{ github.run_number }}" >> model_summary_enhanced.md
-        echo "**Tracking Mode:** ${{ github.event.inputs.tracking_mode || 'dual' }}" >> model_summary_enhanced.md
-        echo "" >> model_summary_enhanced.md
-        echo "## Parameters" >> model_summary_enhanced.md
-        echo "- N Estimators: ${{ github.event.inputs.n_estimators || 100 }}" >> model_summary_enhanced.md
-        echo "- Max Depth: ${{ github.event.inputs.max_depth || 10 }}" >> model_summary_enhanced.md
-        echo "- Experiment: ${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" >> model_summary_enhanced.md
-        echo "" >> model_summary_enhanced.md
-        echo "## Artifact Locations" >> model_summary_enhanced.md
-        echo "### Root Directory Files" >> model_summary_enhanced.md
-        echo "- trained_model_ci.pkl" >> model_summary_enhanced.md
-        echo "- confusion_matrix_ci.png" >> model_summary_enhanced.md
-        echo "- feature_importance_ci.png" >> model_summary_enhanced.md
-        echo "- classification_report_ci.txt" >> model_summary_enhanced.md
-        echo "- training_summary.md" >> model_summary_enhanced.md
-        echo "" >> model_summary_enhanced.md
-        echo "### Local Backup Directory (model_artifacts/)" >> model_summary_enhanced.md
-        if [ -d "model_artifacts" ]; then
-          ls -la model_artifacts/ | while read line; do
-            echo "- $line" >> model_summary_enhanced.md
-          done
-        else
-          echo "- No local backup directory found" >> model_summary_enhanced.md
-        fi
-        echo "" >> model_summary_enhanced.md
-        echo "### MLflow Tracking Directory (mlruns/)" >> model_summary_enhanced.md
-        if [ -d "mlruns" ]; then
-          echo "- Local MLflow experiments available" >> model_summary_enhanced.md
-          find mlruns -type f | head -5 | while read line; do
-            echo "- $line" >> model_summary_enhanced.md
-          done
-        else
-          echo "- No local MLflow directory (using remote tracking)" >> model_summary_enhanced.md
-        fi
-        echo "" >> model_summary_enhanced.md
-        echo "## Access Instructions" >> model_summary_enhanced.md
-        echo "### Remote Tracking (DagsHub)" >> model_summary_enhanced.md
-        echo "- URL: https://dagshub.com/alvian2022/iris-classification" >> model_summary_enhanced.md
-        echo "- MLflow UI: https://dagshub.com/alvian2022/iris-classification.mlflow" >> model_summary_enhanced.md
-        echo "" >> model_summary_enhanced.md
-        echo "### Local Access" >> model_summary_enhanced.md
-        echo "- Download artifacts from GitHub Actions" >> model_summary_enhanced.md
-        echo "- Extract and run: \`mlflow ui\` in the mlruns directory" >> model_summary_enhanced.md
-        echo "- Model files available in model_artifacts/ directory" >> model_summary_enhanced.md
-        
-    - name: Upload enhanced summary
-      uses: actions/upload-artifact@v3
-      with:
-        name: model-summary-enhanced-${{ github.run_number }}
-        path: MLProject/model_summary_enhanced.md
-        retention-days: 30
-        
-    - name: Create tracking status report
-      shell: bash -l {0}
-      run: |
-        conda activate iris-classification-env
-        cd MLProject
-        echo "=== TRACKING STATUS REPORT ===" > tracking_status.txt
-        echo "Date: $(date)" >> tracking_status.txt
-        echo "Workflow: ${{ github.run_number }}" >> tracking_status.txt
-        echo "Mode: ${{ github.event.inputs.tracking_mode || 'dual' }}" >> tracking_status.txt
-        echo "" >> tracking_status.txt
-        echo "DAGSHUB_TOKEN: ${{ secrets.DAGSHUB_TOKEN != '' && 'SET' || 'NOT SET' }}" >> tracking_status.txt
-        echo "" >> tracking_status.txt
-        echo "File Locations:" >> tracking_status.txt
-        echo "Root files:" >> tracking_status.txt
-        ls -la *.pkl *.png *.txt *.md 2>/dev/null || echo "No root artifacts found" >> tracking_status.txt
-        echo "" >> tracking_status.txt
-        echo "model_artifacts/:" >> tracking_status.txt
-        ls -la model_artifacts/ 2>/dev/null || echo "No model_artifacts directory" >> tracking_status.txt
-        echo "" >> tracking_status.txt
-        echo "mlruns/:" >> tracking_status.txt
-        ls -la mlruns/ 2>/dev/null || echo "No mlruns directory" >> tracking_status.txt
-        
-    - name: Upload tracking status
-      uses: actions/upload-artifact@v3
-      with:
-        name: tracking-status-${{ github.run_number }}
-        path: MLProject/tracking_status.txt
-        retention-days: 30
-        
-    # Advanced: Push artifacts to repository (for Advanced level)
-    - name: Commit and push artifacts to repository
-      if: github.ref == 'refs/heads/main'
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        
-        # Create comprehensive artifacts directory
-        mkdir -p artifacts/models
-        mkdir -p artifacts/visualizations
-        mkdir -p artifacts/reports
-        mkdir -p artifacts/mlruns
-        
-        # Copy all artifacts with better organization
-        cp MLProject/trained_model_ci.pkl artifacts/models/ 2>/dev/null || echo "Model file not found"
-        cp MLProject/confusion_matrix_ci.png artifacts/visualizations/ 2>/dev/null || echo "Confusion matrix not found"
-        cp MLProject/feature_importance_ci.png artifacts/visualizations/ 2>/dev/null || echo "Feature importance not found"
-        cp MLProject/classification_report_ci.txt artifacts/reports/ 2>/dev/null || echo "Classification report not found"
-        cp MLProject/training_summary.md artifacts/reports/ 2>/dev/null || echo "Training summary not found"
-        cp MLProject/model_summary_enhanced.md artifacts/reports/ 2>/dev/null || echo "Enhanced summary not found"
-        cp MLProject/tracking_status.txt artifacts/reports/ 2>/dev/null || echo "Tracking status not found"
-        
-        # Copy model_artifacts if exists
-        if [ -d "MLProject/model_artifacts" ]; then
-          cp -r MLProject/model_artifacts/* artifacts/models/ 2>/dev/null || echo "No model artifacts to copy"
-        fi
-        
-        # Copy mlruns if exists
-        if [ -d "MLProject/mlruns" ]; then
-          cp -r MLProject/mlruns/* artifacts/mlruns/ 2>/dev/null || echo "No mlruns to copy"
-        fi
-        
-        # Add timestamp and metadata
-        echo "$(date)" > artifacts/last_training.txt
-        echo "Workflow: ${{ github.run_number }}" >> artifacts/last_training.txt
-        echo "Commit: ${{ github.sha }}" >> artifacts/last_training.txt
-        echo "Mode: ${{ github.event.inputs.tracking_mode || 'dual' }}" >> artifacts/last_training.txt
-        
-        # Create README for artifacts
-        cat > artifacts/README.md << EOF
-# Model Artifacts
-
-## Training Information
-- **Date:** $(date)
-- **Workflow Run:** ${{ github.run_number }}
-- **Git Commit:** ${{ github.sha }}
-- **Tracking Mode:** ${{ github.event.inputs.tracking_mode || 'dual' }}
-- **Author:** alpian_khairi_C1BO
-
-## Directory Structure
-- \`models/\` - Trained model files
-- \`visualizations/\` - Plots and charts
-- \`reports/\` - Text reports and summaries
-- \`mlruns/\` - Local MLflow tracking data (if available)
-
-## Access
-- **Remote Tracking:** https://dagshub.com/alvian2022/iris-classification
-- **Local MLflow:** Run \`mlflow ui\` in the mlruns directory
-EOF
-        
-        # Commit if there are changes
-        git add artifacts/
-        git diff --staged --quiet || (git commit -m "🤖 Auto-update comprehensive model artifacts from CI/CD [skip ci]
-
-        📊 Training Summary:
-        - Workflow: ${{ github.run_number }}
-        - Mode: ${{ github.event.inputs.tracking_mode || 'dual' }}
-        - Parameters: n_estimators=${{ github.event.inputs.n_estimators || 100 }}, max_depth=${{ github.event.inputs.max_depth || 10 }}
-        - Experiment: ${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}
-        
-        🔗 View results: https://dagshub.com/alvian2022/iris-classification" && git push)
-
-  # Enhanced: Build Docker image with better artifact handling
-  docker-build:
-    needs: model-training
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      
-    - name: Download ALL model artifacts
-      uses: actions/download-artifact@v3
-      with:
-        name: model-artifacts-complete-${{ github.run_number }}
-        path: MLProject/
-        
-    - name: Verify downloaded artifacts
-      run: |
-        echo "=== DOWNLOADED ARTIFACTS ==="
-        find MLProject/ -name "*.pkl" -o -name "*.png" -o -name "*.txt" -o -name "*.md"
-        echo ""
-        echo "Directory structure:"
-        ls -la MLProject/
-        
-    - name: Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.9'
-        
-    - name: Install MLflow
-      run: |
-        pip install mlflow
-        
-    - name: Build Docker image with MLflow
+    - name: Create model summary
       run: |
         cd MLProject
-        echo "Building Docker image with enhanced artifacts..."
+        echo "# Model Training Summary" > model_summary.md
+        echo "**Author:** alpian_khairi_C1BO" >> model_summary.md
+        echo "**Date:** $(date)" >> model_summary.md
+        echo "**Git Commit:** ${{ github.sha }}" >> model_summary.md
+        echo "**Workflow Run:** ${{ github.run_number }}" >> model_summary.md
+        echo "" >> model_summary.md
+        echo "## Parameters" >> model_summary.md
+        echo "- N Estimators: ${{ github.event.inputs.n_estimators || 100 }}" >> model_summary.md
+        echo "- Max Depth: ${{ github.event.inputs.max_depth || 10 }}" >> model_summary.md
+        echo "- Experiment: ${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" >> model_summary.md
+        echo "" >> model_summary.md
+        echo "## Generated Files" >> model_summary.md
+        echo "$(ls -la *.pkl *.png *.txt 2>/dev/null || echo 'No artifacts found')" >> model_summary.md
         
-        # Try to build with latest model from registry
-        mlflow models build-docker \
-          --model-uri models:/iris_classifier_ci/latest \
-          --name "iris-classifier-ci" \
-          --enable-mlserver || echo "Registry build failed, trying local model..."
-          
-        # Fallback to local model if registry fails
-        if [ -f "trained_model_ci.pkl" ]; then
-          echo "Using local model for Docker build..."
-          python -c "
-import mlflow
-import mlflow.sklearn
-import joblib
-import os
-
-# Load local model
-model = joblib.load('trained_model_ci.pkl')
-
-# Start MLflow run and log model
-with mlflow.start_run():
-    mlflow.sklearn.log_model(model, 'model')
-    run_id = mlflow.active_run().info.run_id
-    
-print(f'Local model logged with run_id: {run_id}')
-" || echo "Local model logging failed"
-        fi
-        
-    - name: Login to Docker Hub
-      if: success()
-      uses: docker/login-action@v2
-      with:
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
-        
-    - name: Tag and push Docker image
-      if: success()
-      run: |
-        # Check if image was created
-        if docker images | grep -q "iris-classifier-ci"; then
-          docker tag iris-classifier-ci:latest ${{ secrets.DOCKER_USERNAME }}/iris-classifier-ci:latest
-          docker tag iris-classifier-ci:latest ${{ secrets.DOCKER_USERNAME }}/iris-classifier-ci:${{ github.run_number }}
-          docker push ${{ secrets.DOCKER_USERNAME }}/iris-classifier-ci:latest
-          docker push ${{ secrets.DOCKER_USERNAME }}/iris-classifier-ci:${{ github.run_number }}
-          
-          echo "Docker image pushed successfully!"
-        else
-          echo "Docker image not found, skipping push"
-        fi
-        
-    - name: Create comprehensive Docker Hub info
-      if: success()
-      run: |
-        mkdir -p MLProject/docker_info
-        
-        cat > MLProject/docker_info/Docker_Info.md << EOF
-# Docker Image Information
-
-## Image Details
-- **Repository:** ${{ secrets.DOCKER_USERNAME }}/iris-classifier-ci
-- **Tags:** latest, ${{ github.run_number }}
-- **Built:** $(date)
-- **Workflow:** ${{ github.run_number }}
-
-## Docker Hub Links
-- **Repository:** https://hub.docker.com/r/${{ secrets.DOCKER_USERNAME }}/iris-classifier-ci
-- **Latest Tag:** https://hub.docker.com/r/${{ secrets.DOCKER_USERNAME }}/iris-classifier-ci/tags
-
-## Usage
-\`\`\`bash
-# Pull the image
-docker pull ${{ secrets.DOCKER_USERNAME }}/iris-classifier-ci:latest
-
-# Run the model server
-docker run -p 8080:8080 ${{ secrets.DOCKER_USERNAME }}/iris-classifier-ci:latest
-\`\`\`
-
-## Model Information
-- **Author:** alpian_khairi_C1BO
-- **Model Type:** Random Forest Classifier
-- **Dataset:** Iris Classification
-- **Tracking:** DagsHub + Local Backup
-EOF
-        
-        echo "https://hub.docker.com/r/${{ secrets.DOCKER_USERNAME }}/iris-classifier-ci" > MLProject/docker_info/Tautan_ke_Docker_Hub.txt
-        
-    - name: Upload Docker information
-      if: success()
+    - name: Upload model summary
       uses: actions/upload-artifact@v3
       with:
-        name: docker-info-${{ github.run_number }}
-        path: MLProject/docker_info/
+        name: model-summary-${{ github.run_number }}
+        path: MLProject/model_summary.md
         retention-days: 30
