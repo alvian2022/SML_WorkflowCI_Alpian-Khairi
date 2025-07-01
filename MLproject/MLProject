@@ -21,10 +21,3 @@ entry_points:
       max_depth: {type: int, default: 10}
       random_state: {type: int, default: 42}
     command: "python modelling.py --data_path {data_path} --experiment_name {experiment_name} --model_name {model_name} --n_estimators {n_estimators} --max_depth {max_depth} --random_state {random_state}"
-
-  hyperparameter_tuning:
-    parameters:
-      data_path: {type: string, default: "iris_preprocessing.csv"}
-      cv_folds: {type: int, default: 5}
-      scoring: {type: string, default: "accuracy"}
-    command: "python modelling_tuning.py --data_path {data_path} --cv_folds {cv_folds} --scoring {scoring}"

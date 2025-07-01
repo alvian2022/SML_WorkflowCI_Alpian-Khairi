@@ -8,15 +8,12 @@ RUN apt-get update && apt-get install -y \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements
-COPY conda.yaml .
-RUN pip install conda-env-to-requirements
-RUN conda-env-to-requirements conda.yaml > requirements.txt
-RUN pip install -r requirements.txt
+# Copy requirements and install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application files
-COPY modelling.py .
-COPY iris_preprocessing.csv .
+COPY . .
 
 # Expose MLflow model serving port
 EXPOSE 8080

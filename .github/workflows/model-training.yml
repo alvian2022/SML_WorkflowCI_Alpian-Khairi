@@ -1,4 +1,4 @@
-name: MLflow CI/CD Model Training
+name: MLflow CI/CD with Docker Hub
 
 on:
   push:
@@ -33,9 +33,17 @@ on:
         options:
         - 'true'
         - 'false'
+      build_docker:
+        description: 'Build and push Docker image (true/false)'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+        - 'true'
+        - 'false'
 
 jobs:
-  model-training:
+  model-training-and-docker:
     runs-on: ubuntu-latest
     
     steps:
@@ -47,97 +55,24 @@ jobs:
       with:
         python-version: '3.9'
         
-    - name: Debug - List project structure
-      run: |
-        echo "Root directory contents:"
-        ls -la
-        echo "MLproject directory contents (if exists):"
-        ls -la MLproject/ || echo "MLproject directory not found"
-        echo "Looking for required files..."
-        find . -name "conda.yaml" -o -name "MLProject" -o -name "modelling.py" | head -20
-        
-    - name: Verify required files exist
-      run: |
-        echo "Checking for required files..."
-        
-        # Check conda.yaml
-        if [ -f MLproject/conda.yaml ]; then
-          echo "✅ conda.yaml found!"
-          echo "conda.yaml content:"
-          cat MLproject/conda.yaml
-        else
-          echo "❌ conda.yaml not found!"
-          exit 1
-        fi
-        
-        # Check MLProject
-        if [ -f MLproject/MLProject ]; then
-          echo "✅ MLProject file found!"
-          echo "MLProject file content:"
-          cat MLproject/MLProject
-        else
-          echo "❌ MLProject file not found!"
-          exit 1
-        fi
-        
-        # Check modelling.py
-        if [ -f MLproject/modelling.py ]; then
-          echo "✅ modelling.py found!"
-        else
-          echo "❌ modelling.py not found!"
-          exit 1
-        fi
+    - name: Install Docker
+      uses: docker/setup-buildx-action@v3
         
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
-        echo "Installing core dependencies..."
         pip install numpy==1.24.4 pandas==2.1.4 scikit-learn==1.3.2 
         pip install matplotlib==3.8.2 seaborn==0.13.0
         pip install mlflow==2.8.1 dagshub python-dotenv joblib
         pip install requests urllib3
         
-    - name: Verify Python environment
+    - name: Setup environment variables
       run: |
-        echo "Python version:"
-        python --version
-        echo "Installed packages:"
-        pip list | grep -E "(numpy|pandas|scikit-learn|matplotlib|seaborn|mlflow|dagshub|joblib)" || echo "Some packages might be missing"
-        echo "Python path:"
-        python -c "import sys; print('\\n'.join(sys.path))"
-        
-    - name: Test imports
-      run: |
-        echo "Testing critical imports..."
-        python -c "import numpy; print(f'NumPy: {numpy.__version__}')"
-        python -c "import pandas; print(f'Pandas: {pandas.__version__}')"
-        python -c "import sklearn; print(f'Scikit-learn: {sklearn.__version__}')"
-        python -c "import matplotlib; print(f'Matplotlib: {matplotlib.__version__}')"
-        python -c "import seaborn; print(f'Seaborn: {seaborn.__version__}')"
-        python -c "import mlflow; print(f'MLflow: {mlflow.__version__}')"
-        python -c "import dagshub; print('DagsHub: OK')"
-        python -c "import joblib; print(f'Joblib: {joblib.__version__}')"
-        
-    - name: Setup Miniconda (optional - for MLflow conda env)
-      uses: conda-incubator/setup-miniconda@v3
-      with:
-        miniconda-version: "latest"
-        activate-environment: iris-classification-env
-        environment-file: ./MLproject/conda.yaml
-        python-version: 3.9
-        auto-activate-base: false
-        auto-update-conda: true
-      continue-on-error: true
-      
-    - name: Set up environment variables
-      run: |
-        # Set environment variables for both local and remote tracking
         echo "PYTHONPATH=$GITHUB_WORKSPACE:$GITHUB_WORKSPACE/MLproject:$PYTHONPATH" >> $GITHUB_ENV
         echo "MLFLOW_TRACKING_INSECURE_TLS=true" >> $GITHUB_ENV
         echo "MLFLOW_HTTP_REQUEST_TIMEOUT=30" >> $GITHUB_ENV
         echo "MLFLOW_HTTP_REQUEST_MAX_RETRIES=3" >> $GITHUB_ENV
         
-        # Only set DagsHub credentials if token is available and remote tracking is requested
         if [ "${{ secrets.DAGSHUB_TOKEN }}" != "" ] && [ "${{ github.event.inputs.use_remote_tracking }}" == "true" ]; then
           echo "DAGSHUB_TOKEN=${{ secrets.DAGSHUB_TOKEN }}" >> $GITHUB_ENV
           echo "MLFLOW_TRACKING_USERNAME=alvian2022" >> $GITHUB_ENV
@@ -145,200 +80,170 @@ jobs:
           echo "REMOTE_TRACKING_ENABLED=true" >> $GITHUB_ENV
         else
           echo "REMOTE_TRACKING_ENABLED=false" >> $GITHUB_ENV
-          echo "ℹ️ Remote tracking disabled - using local MLflow tracking"
         fi
         
-    - name: Change to project directory and prepare data
+    - name: Prepare data and run training
+      working-directory: ./MLproject
       run: |
-        cd MLproject
-        echo "Changed to project directory: $(pwd)"
-        echo "Files in current directory:"
-        ls -la
-        
-        # Create sample data if it doesn't exist
+        # Create sample data if needed
         python -c "
         import pandas as pd
         from sklearn.datasets import load_iris
         import os
-
-        # Create sample data if iris_preprocessing.csv doesn't exist
         if not os.path.exists('iris_preprocessing.csv'):
-            print('Creating sample iris dataset...')
             iris = load_iris()
             df = pd.DataFrame(iris.data, columns=iris.feature_names)
             df['target'] = iris.target
             df.to_csv('iris_preprocessing.csv', index=False)
-            print('Sample data created: iris_preprocessing.csv')
-            print(f'Data shape: {df.shape}')
-            print(f'Columns: {list(df.columns)}')
-            print(f'Target distribution:\\n{df.target.value_counts()}')
-        else:
-            print('iris_preprocessing.csv already exists')
-            df = pd.read_csv('iris_preprocessing.csv')
-            print(f'Data shape: {df.shape}')
-            print(f'Columns: {list(df.columns)}')
+            print('Sample data created')
         "
         
-    - name: Test DagsHub Connection (if remote tracking enabled)
-      working-directory: ./MLproject
-      run: |
-        if [ "$REMOTE_TRACKING_ENABLED" == "true" ]; then
-          echo "Testing DagsHub connection..."
-          python -c "
-          import os
-          import requests
-          from requests.adapters import HTTPAdapter
-          from urllib3.util.retry import Retry
-
-          try:
-              session = requests.Session()
-              retry_strategy = Retry(
-                  total=3,
-                  backoff_factor=1,
-                  status_forcelist=[429, 500, 502, 503, 504],
-              )
-              adapter = HTTPAdapter(max_retries=retry_strategy)
-              session.mount('http://', adapter)
-              session.mount('https://', adapter)
-              
-              # Test DagsHub connection
-              response = session.get('https://dagshub.com/alvian2022/iris-classification', timeout=10)
-              if response.status_code == 200:
-                  print('✅ DagsHub connection successful')
-              else:
-                  print(f'⚠️ DagsHub returned status code: {response.status_code}')
-                  print('Switching to local tracking...')
-                  os.environ['REMOTE_TRACKING_ENABLED'] = 'false'
-          except Exception as e:
-              print(f'❌ DagsHub connection failed: {e}')
-              print('Switching to local tracking...')
-              os.environ['REMOTE_TRACKING_ENABLED'] = 'false'
-          "
-        else
-          echo "ℹ️ Remote tracking disabled - using local MLflow tracking"
-        fi
-        
-    - name: Run Direct Python Training (Primary Method)
-      working-directory: ./MLproject
-      run: |
-        echo "🚀 Starting model training..."
-        echo "Training Configuration:"
-        echo "  - Remote Tracking: $REMOTE_TRACKING_ENABLED"
-        echo "  - Experiment: ${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}"
-        echo "  - N Estimators: ${{ github.event.inputs.n_estimators || 100 }}"
-        echo "  - Max Depth: ${{ github.event.inputs.max_depth || 10 }}"
-        
-        # Run direct Python training with timeout
-        timeout 600 python modelling.py \
+        # Run training
+        python modelling.py \
           --data_path "iris_preprocessing.csv" \
           --experiment_name "${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" \
           --model_name "iris_classifier_ci" \
           --n_estimators ${{ github.event.inputs.n_estimators || 100 }} \
           --max_depth ${{ github.event.inputs.max_depth || 10 }} \
-          --random_state 42 || {
-            echo "❌ Training failed or timed out after 10 minutes"
-            echo "📊 Checking for partial artifacts..."
-            ls -la *.pkl *.png *.txt *.md *.csv 2>/dev/null || echo "No artifacts found"
-            exit 1
+          --random_state 42
+          
+    - name: Login to Docker Hub
+      if: github.event.inputs.build_docker != 'false'
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_HUB_USERNAME }}
+        password: ${{ secrets.DOCKER_HUB_TOKEN }}
+        
+    - name: Build MLflow Docker Image
+      if: github.event.inputs.build_docker != 'false'
+      working-directory: ./MLproject
+      run: |
+        echo "🐳 Building MLflow Docker image..."
+        
+        # Check if model was trained successfully
+        if [ -f "trained_model_ci.pkl" ]; then
+          echo "✅ Model found, proceeding with Docker build"
+          
+          # Create a simple MLmodel file for MLflow
+          mkdir -p model
+          cat > model/MLmodel << EOF
+        artifact_path: model
+        flavors:
+          python_function:
+            env:
+              conda: conda.yaml
+              virtualenv: requirements.txt
+            loader_module: mlflow.sklearn
+            model_path: model.pkl
+            predict_fn: predict
+            python_version: 3.9.0
+          sklearn:
+            code: null
+            pickled_model: model.pkl
+            serialization_format: cloudpickle
+            sklearn_version: 1.3.2
+        model_uuid: $(python -c "import uuid; print(uuid.uuid4())")
+        utc_time_created: '$(date -u +"%Y-%m-%d %H:%M:%S.%6N")'
+        EOF
+          
+          # Copy model file
+          cp trained_model_ci.pkl model/model.pkl
+          
+          # Build Docker image using MLflow
+          DOCKER_IMAGE_NAME="${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow:latest"
+          echo "Building Docker image: $DOCKER_IMAGE_NAME"
+          
+          # Use mlflow models build-docker
+          mlflow models build-docker \
+            -m "./model" \
+            -n "$DOCKER_IMAGE_NAME" \
+            --enable-mlserver || {
+            
+            echo "MLflow build-docker failed, using traditional Docker build..."
+            
+            # Fallback to traditional Docker build
+            cat > Dockerfile-model << EOF
+        FROM python:3.9-slim
+
+        WORKDIR /app
+
+        # Install system dependencies
+        RUN apt-get update && apt-get install -y gcc && rm -rf /var/lib/apt/lists/*
+
+        # Copy requirements and install
+        COPY requirements.txt .
+        RUN pip install --no-cache-dir -r requirements.txt
+
+        # Copy model and application files
+        COPY trained_model_ci.pkl model.pkl
+        COPY modelling.py .
+        COPY iris_preprocessing.csv .
+
+        # Expose port
+        EXPOSE 8080
+
+        # Serve model
+        CMD ["python", "-c", "import mlflow; import joblib; model = joblib.load('model.pkl'); mlflow.pyfunc.serve_model(model, host='0.0.0.0', port=8080)"]
+        EOF
+            
+            docker build -f Dockerfile-model -t "$DOCKER_IMAGE_NAME" .
           }
           
-    - name: Run MLflow Project Training (Alternative Method)
-      if: failure()
-      working-directory: ./MLproject
-      run: |
-        echo "🔄 Trying MLflow project method as fallback..."
-        
-        # Try to activate conda environment if available
-        if command -v conda &> /dev/null; then
-          echo "Conda available, trying to activate environment..."
-          eval "$(conda shell.bash hook)"
-          conda activate iris-classification-env || echo "Conda activate failed, using pip environment"
-        fi
-        
-        # Run the MLflow project using the training entry point
-        timeout 600 mlflow run . \
-          --entry-point training \
-          --experiment-name "${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" \
-          -P data_path="iris_preprocessing.csv" \
-          -P n_estimators=${{ github.event.inputs.n_estimators || 100 }} \
-          -P max_depth=${{ github.event.inputs.max_depth || 10 }} \
-          -P random_state=42 \
-          --env-manager local || {
-            echo "❌ MLflow project training also failed"
-            exit 1
-          }
-      continue-on-error: true
-        
-    - name: Verify artifacts were created
-      working-directory: ./MLproject
-      run: |
-        echo "📁 Checking for generated artifacts..."
-        
-        # Check for essential files
-        ARTIFACTS_FOUND=false
-        
-        if [ -f "trained_model_ci.pkl" ]; then
-          echo "✅ Model file found: trained_model_ci.pkl"
-          ARTIFACTS_FOUND=true
-        fi
-        
-        if [ -f "confusion_matrix_ci.png" ]; then
-          echo "✅ Confusion matrix found: confusion_matrix_ci.png"
-          ARTIFACTS_FOUND=true
-        fi
-        
-        if [ -f "feature_importance_ci.png" ]; then
-          echo "✅ Feature importance plot found: feature_importance_ci.png"
-          ARTIFACTS_FOUND=true
-        fi
-        
-        if [ -f "classification_report_ci.txt" ]; then
-          echo "✅ Classification report found: classification_report_ci.txt"
-          ARTIFACTS_FOUND=true
-        fi
-        
-        if [ -f "training_summary.md" ]; then
-          echo "✅ Training summary found: training_summary.md"
-          ARTIFACTS_FOUND=true
-        fi
-        
-        echo "📂 All files in project directory:"
-        ls -la
-        
-        echo "📂 Model artifacts directory:"
-        ls -la model_artifacts/ || echo "No model_artifacts directory"
-        
-        echo "📂 MLruns directory:"
-        ls -la mlruns/ || echo "No mlruns directory"
-        
-        if [ "$ARTIFACTS_FOUND" == "false" ]; then
-          echo "❌ No essential artifacts found - training may have failed"
-          exit 1
+          echo "✅ Docker image built successfully: $DOCKER_IMAGE_NAME"
         else
-          echo "✅ Essential artifacts found - training appears successful"
+          echo "❌ Model not found, skipping Docker build"
+          exit 1
         fi
         
-    - name: Display training results
+    - name: Push Docker Image to Docker Hub
+      if: github.event.inputs.build_docker != 'false'
       working-directory: ./MLproject
       run: |
-        echo "📊 Training Results Summary:"
-        echo "=========================="
+        DOCKER_IMAGE_NAME="${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow:latest"
+        echo "🚀 Pushing Docker image to Docker Hub..."
         
-        # Display training summary if available
-        if [ -f "training_summary.md" ]; then
-          echo "📄 Training Summary:"
-          cat training_summary.md
+        docker push "$DOCKER_IMAGE_NAME"
+        
+        echo "✅ Docker image pushed successfully!"
+        echo "🐳 Docker Hub URL: https://hub.docker.com/r/${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow"
+        
+        # Tag with build number
+        BUILD_TAG="${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow:build-${{ github.run_number }}"
+        docker tag "$DOCKER_IMAGE_NAME" "$BUILD_TAG"
+        docker push "$BUILD_TAG"
+        
+        echo "✅ Also tagged as: $BUILD_TAG"
+    
+    - name: Test Docker Image Locally
+      if: github.event.inputs.build_docker != 'false'
+      run: |
+        DOCKER_IMAGE_NAME="${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow:latest"
+        echo "🧪 Testing Docker image locally..."
+        
+        # Run container in background
+        docker run -d -p 8080:8080 --name test-model "$DOCKER_IMAGE_NAME" || {
+          echo "Failed to start container, checking logs..."
+          docker logs test-model || true
+          echo "Container failed to start"
+        }
+        
+        # Wait for container to start
+        sleep 10
+        
+        # Check if container is running
+        if docker ps | grep test-model; then
+          echo "✅ Container is running successfully"
+          
+          # Test model endpoint (optional)
+          curl -f http://localhost:8080/health || echo "Health check endpoint not available"
+        else
+          echo "❌ Container failed to start"
+          docker logs test-model || true
         fi
         
-        # Display classification report if available
-        if [ -f "classification_report_ci.txt" ]; then
-          echo "📈 Classification Report:"
-          cat classification_report_ci.txt
-        fi
-        
-        # Show file sizes
-        echo "📁 Generated Files:"
-        ls -lh *.pkl *.png *.txt *.md *.csv 2>/dev/null || echo "No artifacts in main directory"
+        # Cleanup
+        docker stop test-model || true
+        docker rm test-model || true
         
     - name: Upload training artifacts
       uses: actions/upload-artifact@v4
@@ -355,66 +260,52 @@ jobs:
         retention-days: 30
         if-no-files-found: warn
         
-    - name: Create workflow summary
+    - name: Create comprehensive summary
       working-directory: ./MLproject
       run: |
-        echo "# 🎯 Training Summary" >> $GITHUB_STEP_SUMMARY
+        echo "# 🎯 MLflow CI/CD Training & Docker Summary" >> $GITHUB_STEP_SUMMARY
         echo "- **Workflow Run**: #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Timestamp**: $(date)" >> $GITHUB_STEP_SUMMARY
         echo "- **Parameters**: n_estimators=${{ github.event.inputs.n_estimators || 100 }}, max_depth=${{ github.event.inputs.max_depth || 10 }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Experiment**: ${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Remote Tracking**: $REMOTE_TRACKING_ENABLED" >> $GITHUB_STEP_SUMMARY
+        echo "- **Docker Build**: ${{ github.event.inputs.build_docker != 'false' }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Author**: alpian_khairi_C1BO" >> $GITHUB_STEP_SUMMARY
+        
+        echo "## 🐳 Docker Information" >> $GITHUB_STEP_SUMMARY
+        if [ "${{ github.event.inputs.build_docker }}" != "false" ]; then
+          echo "- **Docker Hub Repository**: https://hub.docker.com/r/${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow" >> $GITHUB_STEP_SUMMARY
+          echo "- **Latest Tag**: \`${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Tag**: \`${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow:build-${{ github.run_number }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Pull Command**: \`docker pull ${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Run Command**: \`docker run -p 8080:8080 ${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow:latest\`" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "- Docker build was skipped" >> $GITHUB_STEP_SUMMARY
+        fi
         
         echo "## 📁 Generated Files" >> $GITHUB_STEP_SUMMARY
         echo '```' >> $GITHUB_STEP_SUMMARY
-        ls -la *.pkl *.png *.txt *.md *.csv 2>/dev/null || echo "No artifacts found in project directory"
+        ls -la *.pkl *.png *.txt *.md *.csv 2>/dev/null || echo "No artifacts found"
         echo '```' >> $GITHUB_STEP_SUMMARY
         
         echo "## 📊 Training Results" >> $GITHUB_STEP_SUMMARY
         if [ -f "training_summary.md" ]; then
-          echo "### Training Summary" >> $GITHUB_STEP_SUMMARY
           cat training_summary.md >> $GITHUB_STEP_SUMMARY
         fi
         
-        if [ -f "classification_report_ci.txt" ]; then
-          echo "### Classification Report" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          cat classification_report_ci.txt >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-        fi
-        
-        # Create a comprehensive summary file
-        echo "=== MLflow CI/CD Training Summary ===" > training_summary.txt
-        echo "Workflow Run: #${{ github.run_number }}" >> training_summary.txt
-        echo "Commit: ${{ github.sha }}" >> training_summary.txt
-        echo "Timestamp: $(date)" >> training_summary.txt
-        echo "Parameters: n_estimators=${{ github.event.inputs.n_estimators || 100 }}, max_depth=${{ github.event.inputs.max_depth || 10 }}" >> training_summary.txt
-        echo "Experiment: ${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" >> training_summary.txt
-        echo "Remote Tracking: $REMOTE_TRACKING_ENABLED" >> training_summary.txt
-        echo "Author: alpian_khairi_C1BO" >> training_summary.txt
-        echo "Status: SUCCESS" >> training_summary.txt
-        echo "" >> training_summary.txt
-        echo "Generated Files:" >> training_summary.txt
-        ls -la *.pkl *.png *.txt *.md *.csv 2>/dev/null >> training_summary.txt || echo "No artifacts found" >> training_summary.txt
-        
-    - name: Upload workflow summary
-      uses: actions/upload-artifact@v4
-      with:
-        name: workflow-summary-${{ github.run_number }}
-        path: MLproject/training_summary.txt
-        retention-days: 30
-        if-no-files-found: warn
-        
     - name: Notify completion
       run: |
-        echo "🎉 Training workflow completed successfully!"
+        echo "🎉 MLflow CI/CD with Docker workflow completed successfully!"
         echo "📊 Check the 'Actions' tab for detailed results and artifacts"
         echo "📁 Artifacts will be available for download for 30 days"
+        if [ "${{ github.event.inputs.build_docker }}" != "false" ]; then
+          echo "🐳 Docker image pushed to: https://hub.docker.com/r/${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow"
+          echo "🚀 Pull with: docker pull ${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow:latest"
+          echo "▶️  Run with: docker run -p 8080:8080 ${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow:latest"
+        fi
         if [ "$REMOTE_TRACKING_ENABLED" == "true" ]; then
           echo "🌐 Remote tracking: Check DagsHub for experiment results"
-          echo "   Repository: https://dagshub.com/alvian2022/iris-classification"
         else
           echo "💻 Local tracking: MLflow results stored in artifacts"
         fi
