@@ -25,6 +25,14 @@ on:
         description: 'Maximum depth'
         required: false
         default: '10'
+      use_remote_tracking:
+        description: 'Use DagsHub remote tracking (true/false)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+        - 'true'
+        - 'false'
 
 jobs:
   model-training:
@@ -87,6 +95,7 @@ jobs:
         pip install numpy==1.24.4 pandas==2.1.4 scikit-learn==1.3.2 
         pip install matplotlib==3.8.2 seaborn==0.13.0
         pip install mlflow==2.8.1 dagshub python-dotenv joblib
+        pip install requests urllib3
         
     - name: Verify Python environment
       run: |
@@ -122,10 +131,22 @@ jobs:
       
     - name: Set up environment variables
       run: |
-        echo "DAGSHUB_TOKEN=${{ secrets.DAGSHUB_TOKEN }}" >> $GITHUB_ENV
-        echo "MLFLOW_TRACKING_USERNAME=alvian2022" >> $GITHUB_ENV
-        echo "MLFLOW_TRACKING_PASSWORD=${{ secrets.DAGSHUB_TOKEN }}" >> $GITHUB_ENV
+        # Set environment variables for both local and remote tracking
         echo "PYTHONPATH=$GITHUB_WORKSPACE:$GITHUB_WORKSPACE/MLproject:$PYTHONPATH" >> $GITHUB_ENV
+        echo "MLFLOW_TRACKING_INSECURE_TLS=true" >> $GITHUB_ENV
+        echo "MLFLOW_HTTP_REQUEST_TIMEOUT=30" >> $GITHUB_ENV
+        echo "MLFLOW_HTTP_REQUEST_MAX_RETRIES=3" >> $GITHUB_ENV
+        
+        # Only set DagsHub credentials if token is available and remote tracking is requested
+        if [ "${{ secrets.DAGSHUB_TOKEN }}" != "" ] && [ "${{ github.event.inputs.use_remote_tracking }}" == "true" ]; then
+          echo "DAGSHUB_TOKEN=${{ secrets.DAGSHUB_TOKEN }}" >> $GITHUB_ENV
+          echo "MLFLOW_TRACKING_USERNAME=alvian2022" >> $GITHUB_ENV
+          echo "MLFLOW_TRACKING_PASSWORD=${{ secrets.DAGSHUB_TOKEN }}" >> $GITHUB_ENV
+          echo "REMOTE_TRACKING_ENABLED=true" >> $GITHUB_ENV
+        else
+          echo "REMOTE_TRACKING_ENABLED=false" >> $GITHUB_ENV
+          echo "ℹ️ Remote tracking disabled - using local MLflow tracking"
+        fi
         
     - name: Change to project directory and prepare data
       run: |
@@ -136,7 +157,6 @@ jobs:
         
         # Create sample data if it doesn't exist
         python -c "
-        
         import pandas as pd
         from sklearn.datasets import load_iris
         import os
@@ -159,13 +179,74 @@ jobs:
             print(f'Columns: {list(df.columns)}')
         "
         
-    - name: Run MLflow Project Training (Primary Method)
+    - name: Test DagsHub Connection (if remote tracking enabled)
       working-directory: ./MLproject
       run: |
-        echo "Running MLflow project with training entry point..."
-        echo "Current directory: $(pwd)"
-        echo "Available files:"
-        ls -la
+        if [ "$REMOTE_TRACKING_ENABLED" == "true" ]; then
+          echo "Testing DagsHub connection..."
+          python -c "
+          import os
+          import requests
+          from requests.adapters import HTTPAdapter
+          from urllib3.util.retry import Retry
+
+          try:
+              session = requests.Session()
+              retry_strategy = Retry(
+                  total=3,
+                  backoff_factor=1,
+                  status_forcelist=[429, 500, 502, 503, 504],
+              )
+              adapter = HTTPAdapter(max_retries=retry_strategy)
+              session.mount('http://', adapter)
+              session.mount('https://', adapter)
+              
+              # Test DagsHub connection
+              response = session.get('https://dagshub.com/alvian2022/iris-classification', timeout=10)
+              if response.status_code == 200:
+                  print('✅ DagsHub connection successful')
+              else:
+                  print(f'⚠️ DagsHub returned status code: {response.status_code}')
+                  print('Switching to local tracking...')
+                  os.environ['REMOTE_TRACKING_ENABLED'] = 'false'
+          except Exception as e:
+              print(f'❌ DagsHub connection failed: {e}')
+              print('Switching to local tracking...')
+              os.environ['REMOTE_TRACKING_ENABLED'] = 'false'
+          "
+        else
+          echo "ℹ️ Remote tracking disabled - using local MLflow tracking"
+        fi
+        
+    - name: Run Direct Python Training (Primary Method)
+      working-directory: ./MLproject
+      run: |
+        echo "🚀 Starting model training..."
+        echo "Training Configuration:"
+        echo "  - Remote Tracking: $REMOTE_TRACKING_ENABLED"
+        echo "  - Experiment: ${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}"
+        echo "  - N Estimators: ${{ github.event.inputs.n_estimators || 100 }}"
+        echo "  - Max Depth: ${{ github.event.inputs.max_depth || 10 }}"
+        
+        # Run direct Python training with timeout
+        timeout 600 python modelling.py \
+          --data_path "iris_preprocessing.csv" \
+          --experiment_name "${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" \
+          --model_name "iris_classifier_ci" \
+          --n_estimators ${{ github.event.inputs.n_estimators || 100 }} \
+          --max_depth ${{ github.event.inputs.max_depth || 10 }} \
+          --random_state 42 || {
+            echo "❌ Training failed or timed out after 10 minutes"
+            echo "📊 Checking for partial artifacts..."
+            ls -la *.pkl *.png *.txt *.md *.csv 2>/dev/null || echo "No artifacts found"
+            exit 1
+          }
+          
+    - name: Run MLflow Project Training (Alternative Method)
+      if: failure()
+      working-directory: ./MLproject
+      run: |
+        echo "🔄 Trying MLflow project method as fallback..."
         
         # Try to activate conda environment if available
         if command -v conda &> /dev/null; then
@@ -175,72 +256,89 @@ jobs:
         fi
         
         # Run the MLflow project using the training entry point
-        mlflow run . \
+        timeout 600 mlflow run . \
           --entry-point training \
           --experiment-name "${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" \
           -P data_path="iris_preprocessing.csv" \
           -P n_estimators=${{ github.event.inputs.n_estimators || 100 }} \
           -P max_depth=${{ github.event.inputs.max_depth || 10 }} \
           -P random_state=42 \
-          --env-manager local || echo "MLflow project training entry point failed"
+          --env-manager local || {
+            echo "❌ MLflow project training also failed"
+            exit 1
+          }
       continue-on-error: true
-      
-    - name: Run MLflow Project Main Entry Point (Fallback 1)
-      if: failure()
-      working-directory: ./MLproject
-      run: |
-        echo "Trying main entry point as fallback..."
         
-        # Run the MLflow project using the main entry point
-        mlflow run . \
-          --entry-point main \
-          --experiment-name "${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" \
-          -P data_path="iris_preprocessing.csv" \
-          -P experiment_name="${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" \
-          -P model_name="iris_classifier_ci" \
-          -P n_estimators=${{ github.event.inputs.n_estimators || 100 }} \
-          -P max_depth=${{ github.event.inputs.max_depth || 10 }} \
-          -P random_state=42 \
-          --env-manager local || echo "Main entry point also failed"
-      continue-on-error: true
-      
-    - name: Run Direct Python Training (Fallback 2)
-      if: failure()
-      working-directory: ./MLproject
-      run: |
-        echo "Running direct Python training as final fallback..."
-        echo "Current Python environment:"
-        which python
-        python --version
-        pip list | grep -E "(numpy|pandas|scikit-learn|matplotlib|seaborn|mlflow)" || echo "Missing packages"
-        
-        # Run direct Python training
-        python modelling.py \
-          --data_path "iris_preprocessing.csv" \
-          --experiment_name "${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" \
-          --model_name "iris_classifier_ci" \
-          --n_estimators ${{ github.event.inputs.n_estimators || 100 }} \
-          --max_depth ${{ github.event.inputs.max_depth || 10 }} \
-          --random_state 42
-          
     - name: Verify artifacts were created
       working-directory: ./MLproject
       run: |
-        echo "Checking for generated artifacts..."
-        echo "Python files:"
-        ls -la *.py || echo "No Python files"
-        echo "Data files:"
-        ls -la *.csv || echo "No CSV files"
-        echo "Model files:"
-        ls -la *.pkl || echo "No PKL files"
-        echo "Image files:"
-        ls -la *.png || echo "No PNG files"
-        echo "Text files:"
-        ls -la *.txt *.md || echo "No TXT/MD files"
-        echo "Model artifacts directory:"
+        echo "📁 Checking for generated artifacts..."
+        
+        # Check for essential files
+        ARTIFACTS_FOUND=false
+        
+        if [ -f "trained_model_ci.pkl" ]; then
+          echo "✅ Model file found: trained_model_ci.pkl"
+          ARTIFACTS_FOUND=true
+        fi
+        
+        if [ -f "confusion_matrix_ci.png" ]; then
+          echo "✅ Confusion matrix found: confusion_matrix_ci.png"
+          ARTIFACTS_FOUND=true
+        fi
+        
+        if [ -f "feature_importance_ci.png" ]; then
+          echo "✅ Feature importance plot found: feature_importance_ci.png"
+          ARTIFACTS_FOUND=true
+        fi
+        
+        if [ -f "classification_report_ci.txt" ]; then
+          echo "✅ Classification report found: classification_report_ci.txt"
+          ARTIFACTS_FOUND=true
+        fi
+        
+        if [ -f "training_summary.md" ]; then
+          echo "✅ Training summary found: training_summary.md"
+          ARTIFACTS_FOUND=true
+        fi
+        
+        echo "📂 All files in project directory:"
+        ls -la
+        
+        echo "📂 Model artifacts directory:"
         ls -la model_artifacts/ || echo "No model_artifacts directory"
-        echo "MLruns directory:"
+        
+        echo "📂 MLruns directory:"
         ls -la mlruns/ || echo "No mlruns directory"
+        
+        if [ "$ARTIFACTS_FOUND" == "false" ]; then
+          echo "❌ No essential artifacts found - training may have failed"
+          exit 1
+        else
+          echo "✅ Essential artifacts found - training appears successful"
+        fi
+        
+    - name: Display training results
+      working-directory: ./MLproject
+      run: |
+        echo "📊 Training Results Summary:"
+        echo "=========================="
+        
+        # Display training summary if available
+        if [ -f "training_summary.md" ]; then
+          echo "📄 Training Summary:"
+          cat training_summary.md
+        fi
+        
+        # Display classification report if available
+        if [ -f "classification_report_ci.txt" ]; then
+          echo "📈 Classification Report:"
+          cat classification_report_ci.txt
+        fi
+        
+        # Show file sizes
+        echo "📁 Generated Files:"
+        ls -lh *.pkl *.png *.txt *.md *.csv 2>/dev/null || echo "No artifacts in main directory"
         
     - name: Upload training artifacts
       uses: actions/upload-artifact@v4
@@ -260,31 +358,46 @@ jobs:
     - name: Create workflow summary
       working-directory: ./MLproject
       run: |
-        echo "# Training Summary" >> $GITHUB_STEP_SUMMARY
+        echo "# 🎯 Training Summary" >> $GITHUB_STEP_SUMMARY
         echo "- **Workflow Run**: #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Timestamp**: $(date)" >> $GITHUB_STEP_SUMMARY
         echo "- **Parameters**: n_estimators=${{ github.event.inputs.n_estimators || 100 }}, max_depth=${{ github.event.inputs.max_depth || 10 }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Experiment**: ${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Remote Tracking**: $REMOTE_TRACKING_ENABLED" >> $GITHUB_STEP_SUMMARY
         echo "- **Author**: alpian_khairi_C1BO" >> $GITHUB_STEP_SUMMARY
         
-        echo "## Generated Files" >> $GITHUB_STEP_SUMMARY
+        echo "## 📁 Generated Files" >> $GITHUB_STEP_SUMMARY
         echo '```' >> $GITHUB_STEP_SUMMARY
         ls -la *.pkl *.png *.txt *.md *.csv 2>/dev/null || echo "No artifacts found in project directory"
         echo '```' >> $GITHUB_STEP_SUMMARY
         
-        echo "## Directory Structure" >> $GITHUB_STEP_SUMMARY
-        echo '```' >> $GITHUB_STEP_SUMMARY
-        find . -type f -name "*.pkl" -o -name "*.png" -o -name "*.txt" -o -name "*.md" | head -20 || echo "No artifacts found"
-        echo '```' >> $GITHUB_STEP_SUMMARY
+        echo "## 📊 Training Results" >> $GITHUB_STEP_SUMMARY
+        if [ -f "training_summary.md" ]; then
+          echo "### Training Summary" >> $GITHUB_STEP_SUMMARY
+          cat training_summary.md >> $GITHUB_STEP_SUMMARY
+        fi
         
-        # Create a simple summary file
-        echo "Training completed at $(date)" > training_summary.txt
-        echo "Workflow: ${{ github.run_number }}" >> training_summary.txt
+        if [ -f "classification_report_ci.txt" ]; then
+          echo "### Classification Report" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat classification_report_ci.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # Create a comprehensive summary file
+        echo "=== MLflow CI/CD Training Summary ===" > training_summary.txt
+        echo "Workflow Run: #${{ github.run_number }}" >> training_summary.txt
         echo "Commit: ${{ github.sha }}" >> training_summary.txt
+        echo "Timestamp: $(date)" >> training_summary.txt
         echo "Parameters: n_estimators=${{ github.event.inputs.n_estimators || 100 }}, max_depth=${{ github.event.inputs.max_depth || 10 }}" >> training_summary.txt
+        echo "Experiment: ${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" >> training_summary.txt
+        echo "Remote Tracking: $REMOTE_TRACKING_ENABLED" >> training_summary.txt
         echo "Author: alpian_khairi_C1BO" >> training_summary.txt
         echo "Status: SUCCESS" >> training_summary.txt
+        echo "" >> training_summary.txt
+        echo "Generated Files:" >> training_summary.txt
+        ls -la *.pkl *.png *.txt *.md *.csv 2>/dev/null >> training_summary.txt || echo "No artifacts found" >> training_summary.txt
         
     - name: Upload workflow summary
       uses: actions/upload-artifact@v4
@@ -293,3 +406,15 @@ jobs:
         path: MLproject/training_summary.txt
         retention-days: 30
         if-no-files-found: warn
+        
+    - name: Notify completion
+      run: |
+        echo "🎉 Training workflow completed successfully!"
+        echo "📊 Check the 'Actions' tab for detailed results and artifacts"
+        echo "📁 Artifacts will be available for download for 30 days"
+        if [ "$REMOTE_TRACKING_ENABLED" == "true" ]; then
+          echo "🌐 Remote tracking: Check DagsHub for experiment results"
+          echo "   Repository: https://dagshub.com/alvian2022/iris-classification"
+        else
+          echo "💻 Local tracking: MLflow results stored in artifacts"
+        fi
