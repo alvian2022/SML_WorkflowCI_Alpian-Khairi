@@ -1,6 +1,6 @@
 """
-MLProject modelling.py - IMPROVED VERSION
-CI/CD Model Training for MLflow Project with Better Local Artifact Management
+MLProject modelling.py - FIXED VERSION
+CI/CD Model Training for MLflow Project with Unicode Error Fix
 Author: alpian_khairi_C1BO
 """
 
@@ -31,9 +31,27 @@ from urllib3.util.retry import Retry
 # Load environment variables
 load_dotenv()
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Setup logging with UTF-8 encoding support
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 logger = logging.getLogger(__name__)
+
+# Set UTF-8 encoding for Windows console
+if sys.platform.startswith('win'):
+    import locale
+    try:
+        # Try to set UTF-8 encoding
+        os.environ['PYTHONIOENCODING'] = 'utf-8'
+        sys.stdout.reconfigure(encoding='utf-8', errors='ignore')
+        sys.stderr.reconfigure(encoding='utf-8', errors='ignore')
+    except (AttributeError, OSError):
+        # Fallback for older Python versions
+        pass
 
 class MLProjectTrainer:
     """MLProject model trainer with dual tracking (remote + local artifacts)"""
@@ -48,10 +66,38 @@ class MLProjectTrainer:
         self.setup_local_artifacts_dir()
         self.setup_mlflow()
     
+    def safe_print(self, message):
+        """Safe print function that handles Unicode characters on Windows"""
+        try:
+            print(message)
+        except UnicodeEncodeError:
+            # Replace Unicode characters with ASCII alternatives
+            safe_message = message.encode('ascii', errors='replace').decode('ascii')
+            print(safe_message)
+    
+    def safe_log(self, level, message):
+        """Safe logging function that handles Unicode characters"""
+        try:
+            if level == 'info':
+                logger.info(message)
+            elif level == 'warning':
+                logger.warning(message)
+            elif level == 'error':
+                logger.error(message)
+        except UnicodeEncodeError:
+            # Replace Unicode characters with ASCII alternatives
+            safe_message = message.encode('ascii', errors='replace').decode('ascii')
+            if level == 'info':
+                logger.info(safe_message)
+            elif level == 'warning':
+                logger.warning(safe_message)
+            elif level == 'error':
+                logger.error(safe_message)
+    
     def setup_local_artifacts_dir(self):
         """Setup local artifacts directory"""
         os.makedirs(self.local_artifacts_dir, exist_ok=True)
-        logger.info(f"Local artifacts directory: {self.local_artifacts_dir}")
+        self.safe_log('info', f"Local artifacts directory: {self.local_artifacts_dir}")
     
     def test_dagshub_connection(self, timeout=10):
         """Test connection to DagsHub with retry mechanism"""
@@ -70,17 +116,17 @@ class MLProjectTrainer:
             response = session.get(dagshub_url, timeout=timeout)
             
             if response.status_code == 200:
-                logger.info("✅ DagsHub connection test successful")
+                self.safe_log('info', "[SUCCESS] DagsHub connection test successful")
                 return True
             else:
-                logger.warning(f"⚠️ DagsHub returned status code: {response.status_code}")
+                self.safe_log('warning', f"[WARNING] DagsHub returned status code: {response.status_code}")
                 return False
                 
         except requests.exceptions.RequestException as e:
-            logger.warning(f"⚠️ DagsHub connection test failed: {str(e)}")
+            self.safe_log('warning', f"[WARNING] DagsHub connection test failed: {str(e)}")
             return False
         except Exception as e:
-            logger.warning(f"⚠️ Unexpected error testing DagsHub connection: {str(e)}")
+            self.safe_log('warning', f"[WARNING] Unexpected error testing DagsHub connection: {str(e)}")
             return False
     
     def setup_mlflow(self):
@@ -94,7 +140,7 @@ class MLProjectTrainer:
                     dagshub_repo_owner = "alvian2022"
                     dagshub_repo_name = "iris-classification"
                     
-                    logger.info("Initializing DagsHub connection...")
+                    self.safe_log('info', "Initializing DagsHub connection...")
                     
                     # Set timeouts for MLflow
                     os.environ["MLFLOW_HTTP_REQUEST_TIMEOUT"] = "30"
@@ -117,27 +163,27 @@ class MLProjectTrainer:
                     try:
                         mlflow.get_tracking_uri()
                         self.use_remote_tracking = True
-                        logger.info(f"✅ DagsHub tracking setup successful: {mlflow_tracking_uri}")
-                        logger.info("📊 Metrics and models will be logged to DagsHub")
-                        logger.info("💾 Artifacts will also be saved locally")
+                        self.safe_log('info', f"[SUCCESS] DagsHub tracking setup successful: {mlflow_tracking_uri}")
+                        self.safe_log('info', "[INFO] Metrics and models will be logged to DagsHub")
+                        self.safe_log('info', "[INFO] Artifacts will also be saved locally")
                     except Exception as e:
-                        logger.warning(f"⚠️ MLflow connection test failed: {str(e)}")
+                        self.safe_log('warning', f"[WARNING] MLflow connection test failed: {str(e)}")
                         raise e
                         
                 except Exception as e:
-                    logger.warning(f"⚠️ DagsHub setup failed: {str(e)}")
-                    logger.info("Falling back to local MLflow tracking...")
+                    self.safe_log('warning', f"[WARNING] DagsHub setup failed: {str(e)}")
+                    self.safe_log('info', "Falling back to local MLflow tracking...")
                     self.setup_local_tracking()
             else:
-                logger.info("ℹ️ DagsHub token not available or connection failed, using local MLflow tracking")
+                self.safe_log('info', "[INFO] DagsHub token not available or connection failed, using local MLflow tracking")
                 self.setup_local_tracking()
             
             # Set experiment with retry mechanism
             self.setup_experiment()
             
         except Exception as e:
-            logger.error(f"Error setting up MLflow: {str(e)}")
-            logger.info("Falling back to local MLflow tracking")
+            self.safe_log('error', f"Error setting up MLflow: {str(e)}")
+            self.safe_log('info', "Falling back to local MLflow tracking")
             self.setup_local_tracking()
     
     def setup_local_tracking(self):
@@ -147,10 +193,10 @@ class MLProjectTrainer:
             os.makedirs("mlruns", exist_ok=True)
             mlflow.set_tracking_uri("file:./mlruns")
             self.use_remote_tracking = False
-            logger.info("✅ Local MLflow tracking setup completed")
-            logger.info("📁 Experiments will be stored in ./mlruns")
+            self.safe_log('info', "[SUCCESS] Local MLflow tracking setup completed")
+            self.safe_log('info', "[INFO] Experiments will be stored in ./mlruns")
         except Exception as e:
-            logger.error(f"Error setting up local tracking: {str(e)}")
+            self.safe_log('error', f"Error setting up local tracking: {str(e)}")
     
     def setup_experiment(self):
         """Setup MLflow experiment with retry mechanism"""
@@ -160,24 +206,24 @@ class MLProjectTrainer:
         for attempt in range(max_retries):
             try:
                 mlflow.set_experiment(self.args.experiment_name)
-                logger.info(f"✅ Experiment set: {self.args.experiment_name}")
+                self.safe_log('info', f"[SUCCESS] Experiment set: {self.args.experiment_name}")
                 return
             except Exception as e:
-                logger.warning(f"Attempt {attempt + 1}/{max_retries} to set experiment failed: {str(e)}")
+                self.safe_log('warning', f"Attempt {attempt + 1}/{max_retries} to set experiment failed: {str(e)}")
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
                     retry_delay *= 2
                 else:
-                    logger.error("Failed to set experiment after all retries")
+                    self.safe_log('error', "Failed to set experiment after all retries")
                     raise e
     
     def load_data(self):
         """Load and prepare data"""
         try:
-            logger.info(f"Loading data from {self.args.data_path}")
+            self.safe_log('info', f"Loading data from {self.args.data_path}")
             
             if not os.path.exists(self.args.data_path):
-                logger.warning(f"Data file {self.args.data_path} not found. Creating sample data...")
+                self.safe_log('warning', f"Data file {self.args.data_path} not found. Creating sample data...")
                 self.create_sample_data()
             
             df = pd.read_csv(self.args.data_path)
@@ -186,7 +232,7 @@ class MLProjectTrainer:
             X = df.drop('target', axis=1)
             y = df['target']
             
-            logger.info(f"Data loaded successfully: {X.shape[0]} samples, {X.shape[1]} features")
+            self.safe_log('info', f"Data loaded successfully: {X.shape[0]} samples, {X.shape[1]} features")
             
             # Split data
             X_train, X_test, y_train, y_test = train_test_split(
@@ -196,7 +242,7 @@ class MLProjectTrainer:
             return X_train, X_test, y_train, y_test
             
         except Exception as e:
-            logger.error(f"Error loading data: {str(e)}")
+            self.safe_log('error', f"Error loading data: {str(e)}")
             raise
     
     def create_sample_data(self):
@@ -207,9 +253,9 @@ class MLProjectTrainer:
             df = pd.DataFrame(iris.data, columns=iris.feature_names)
             df['target'] = iris.target
             df.to_csv(self.args.data_path, index=False)
-            logger.info(f"Sample data created: {self.args.data_path}")
+            self.safe_log('info', f"Sample data created: {self.args.data_path}")
         except Exception as e:
-            logger.error(f"Error creating sample data: {str(e)}")
+            self.safe_log('error', f"Error creating sample data: {str(e)}")
             raise
     
     def safe_mlflow_operation(self, operation, *args, **kwargs):
@@ -221,13 +267,13 @@ class MLProjectTrainer:
             try:
                 return operation(*args, **kwargs)
             except Exception as e:
-                logger.warning(f"MLflow operation failed (attempt {attempt + 1}/{max_retries}): {str(e)}")
+                self.safe_log('warning', f"MLflow operation failed (attempt {attempt + 1}/{max_retries}): {str(e)}")
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
                     retry_delay *= 2
                 else:
                     if self.use_remote_tracking:
-                        logger.warning("Remote tracking failed, switching to local tracking")
+                        self.safe_log('warning', "Remote tracking failed, switching to local tracking")
                         self.setup_local_tracking()
                         self.setup_experiment()
                         return operation(*args, **kwargs)
@@ -240,19 +286,19 @@ class MLProjectTrainer:
             if os.path.exists(file_path):
                 local_path = os.path.join(self.local_artifacts_dir, os.path.basename(file_path))
                 shutil.copy2(file_path, local_path)
-                logger.info(f"Saved locally: {local_path} {description}")
+                self.safe_log('info', f"Saved locally: {local_path} {description}")
                 return local_path
             else:
-                logger.warning(f"File not found for local save: {file_path}")
+                self.safe_log('warning', f"File not found for local save: {file_path}")
                 return None
         except Exception as e:
-            logger.error(f"Error saving artifact locally: {str(e)}")
+            self.safe_log('error', f"Error saving artifact locally: {str(e)}")
             return None
     
     def train_model(self):
         """Train model with MLflow tracking and local artifacts"""
         try:
-            logger.info("Starting CI/CD model training...")
+            self.safe_log('info', "Starting CI/CD model training...")
             
             # Load data
             X_train, X_test, y_train, y_test = self.load_data()
@@ -288,7 +334,7 @@ class MLProjectTrainer:
                     random_state=self.args.random_state
                 )
                 
-                logger.info("Training Random Forest model...")
+                self.safe_log('info', "Training Random Forest model...")
                 self.model.fit(X_train, y_train)
                 
                 # Make predictions
@@ -335,9 +381,9 @@ class MLProjectTrainer:
                         "model",
                         registered_model_name=self.args.model_name
                     )
-                    logger.info("✅ Model registered successfully")
+                    self.safe_log('info', "[SUCCESS] Model registered successfully")
                 except Exception as e:
-                    logger.warning(f"Failed to register model: {str(e)}")
+                    self.safe_log('warning', f"Failed to register model: {str(e)}")
                     # Still log the model without registration
                     self.safe_mlflow_operation(mlflow.sklearn.log_model, self.model, "model")
                 
@@ -347,13 +393,13 @@ class MLProjectTrainer:
                 # Create summary
                 self.create_training_summary(metrics)
                 
-                logger.info("Model training completed successfully!")
-                logger.info(f"Accuracy: {accuracy:.4f}")
-                logger.info(f"Precision: {precision:.4f}")
-                logger.info(f"Recall: {recall:.4f}")
-                logger.info(f"F1-Score: {f1:.4f}")
-                logger.info(f"Tracking Type: {'Remote (DagsHub)' if self.use_remote_tracking else 'Local'}")
-                logger.info(f"Local Artifacts: {self.local_artifacts_dir}")
+                self.safe_log('info', "Model training completed successfully!")
+                self.safe_log('info', f"Accuracy: {accuracy:.4f}")
+                self.safe_log('info', f"Precision: {precision:.4f}")
+                self.safe_log('info', f"Recall: {recall:.4f}")
+                self.safe_log('info', f"F1-Score: {f1:.4f}")
+                self.safe_log('info', f"Tracking Type: {'Remote (DagsHub)' if self.use_remote_tracking else 'Local'}")
+                self.safe_log('info', f"Local Artifacts: {self.local_artifacts_dir}")
                 
                 return {
                     'accuracy': accuracy,
@@ -367,7 +413,7 @@ class MLProjectTrainer:
                 }
                 
         except Exception as e:
-            logger.error(f"Error during model training: {str(e)}")
+            self.safe_log('error', f"Error during model training: {str(e)}")
             raise
     
     def create_visualizations(self, y_test, y_pred, y_pred_proba):
@@ -412,7 +458,7 @@ class MLProjectTrainer:
         self.safe_mlflow_operation(mlflow.log_artifact, fi_file)
         plt.close()
         
-        logger.info("Visualizations created and logged")
+        self.safe_log('info', "Visualizations created and logged")
     
     def log_classification_report(self, y_test, y_pred):
         """Log classification report with local backup"""
@@ -421,7 +467,8 @@ class MLProjectTrainer:
                                           target_names=self.target_names)
         
         report_file = 'classification_report_ci.txt'
-        with open(report_file, 'w') as f:
+        # Use UTF-8 encoding when writing files
+        with open(report_file, 'w', encoding='utf-8') as f:
             f.write("CLASSIFICATION REPORT - CI/CD TRAINING\n")
             f.write("="*50 + "\n")
             f.write(f"Author: alpian_khairi_C1BO\n")
@@ -442,7 +489,8 @@ class MLProjectTrainer:
         """Create comprehensive training summary"""
         summary_file = "training_summary.md"
         
-        with open(summary_file, 'w') as f:
+        # Use UTF-8 encoding when writing files
+        with open(summary_file, 'w', encoding='utf-8') as f:
             f.write("# MLProject Training Summary\n\n")
             f.write(f"**Author:** alpian_khairi_C1BO\n")
             f.write(f"**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -479,20 +527,20 @@ class MLProjectTrainer:
             
             if self.use_remote_tracking:
                 f.write("## Remote Tracking\n")
-                f.write("✅ **DagsHub Integration Active**\n")
+                f.write("**SUCCESS - DagsHub Integration Active**\n")
                 f.write("- Experiments: https://dagshub.com/alvian2022/iris-classification\n")
                 f.write("- Model Registry: Available in DagsHub\n")
                 f.write("- Metrics Dashboard: Available in DagsHub MLflow UI\n\n")
             else:
                 f.write("## Local Tracking\n")
-                f.write("📁 **Local MLflow Tracking**\n")
+                f.write("**INFO - Local MLflow Tracking**\n")
                 f.write("- Experiments stored in: ./mlruns\n")
                 f.write("- View with: `mlflow ui`\n\n")
         
         # Save locally and log to MLflow
         self.save_artifact_locally(summary_file, "(training summary)")
         self.safe_mlflow_operation(mlflow.log_artifact, summary_file)
-        logger.info(f"Training summary created: {summary_file}")
+        self.safe_log('info', f"Training summary created: {summary_file}")
 
 def parse_arguments():
     """Parse command line arguments"""
@@ -519,20 +567,20 @@ def main():
     print("="*60)
     print("MLPROJECT CI/CD MODEL TRAINING")
     print("Author: alpian_khairi_C1BO")
-    print("Version: 3.0 (Enhanced with Local Artifacts)")
+    print("Version: 3.1 (Fixed Unicode Error)")
     print("="*60)
     
     try:
         # Parse arguments
         args = parse_arguments()
         
-        logger.info(f"Starting training with parameters:")
-        logger.info(f"  Data path: {args.data_path}")
-        logger.info(f"  Experiment: {args.experiment_name}")
-        logger.info(f"  Model name: {args.model_name}")
-        logger.info(f"  N estimators: {args.n_estimators}")
-        logger.info(f"  Max depth: {args.max_depth}")
-        logger.info(f"  Random state: {args.random_state}")
+        print(f"Starting training with parameters:")
+        print(f"  Data path: {args.data_path}")
+        print(f"  Experiment: {args.experiment_name}")
+        print(f"  Model name: {args.model_name}")
+        print(f"  N estimators: {args.n_estimators}")
+        print(f"  Max depth: {args.max_depth}")
+        print(f"  Random state: {args.random_state}")
         
         # Initialize trainer
         trainer = MLProjectTrainer(args)
@@ -564,16 +612,15 @@ def main():
         print("    - training_summary.md")
         
         if results['tracking_type'] == 'remote':
-            print("\n✅ Remote tracking active - check DagsHub for full experiment data")
-            print("📁 Local backups available for offline access")
+            print("\n[SUCCESS] Remote tracking active - check DagsHub for full experiment data")
+            print("[INFO] Local backups available for offline access")
         else:
-            print("\n📁 Local tracking active - run 'mlflow ui' to view experiments")
+            print("\n[INFO] Local tracking active - run 'mlflow ui' to view experiments")
         
         # Return exit code 0 for successful completion
         sys.exit(0)
         
     except Exception as e:
-        logger.error(f"Training failed: {str(e)}")
         print(f"ERROR: Training failed - {str(e)}")
         sys.exit(1)
 

@@ -7,15 +7,20 @@ entry_points:
       data_path: {type: string, default: "iris_preprocessing.csv"}
       experiment_name: {type: string, default: "iris_classification_ci_alpian_khairi"}
       model_name: {type: string, default: "iris_classifier_ci"}
-    command: "python modelling.py --data_path {data_path} --experiment_name {experiment_name} --model_name {model_name}"
+      n_estimators: {type: int, default: 100}
+      max_depth: {type: int, default: 10}
+      random_state: {type: int, default: 42}
+    command: "python modelling.py --data_path {data_path} --experiment_name {experiment_name} --model_name {model_name} --n_estimators {n_estimators} --max_depth {max_depth} --random_state {random_state}"
   
   training:
     parameters:
       data_path: {type: string, default: "iris_preprocessing.csv"}
+      experiment_name: {type: string, default: "iris_classification_ci_alpian_khairi"}
+      model_name: {type: string, default: "iris_classifier_ci"}
       n_estimators: {type: int, default: 100}
       max_depth: {type: int, default: 10}
       random_state: {type: int, default: 42}
-    command: "python modelling.py --data_path {data_path} --n_estimators {n_estimators} --max_depth {max_depth} --random_state {random_state}"
+    command: "python modelling.py --data_path {data_path} --experiment_name {experiment_name} --model_name {model_name} --n_estimators {n_estimators} --max_depth {max_depth} --random_state {random_state}"
 
   hyperparameter_tuning:
     parameters:

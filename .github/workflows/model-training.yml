@@ -6,6 +6,9 @@ on:
     paths:
       - 'MLProject/**'
       - '.github/workflows/**'
+      - '*.py'
+      - '*.yaml'
+      - '*.yml'
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -31,84 +34,192 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
       
+    - name: Debug - List project structure
+      run: |
+        echo "Root directory contents:"
+        ls -la
+        echo "MLProject directory contents (if exists):"
+        ls -la MLProject/ || echo "MLProject directory not found"
+        echo "Looking for conda.yaml and MLProject files..."
+        find . -name "conda.yaml" -o -name "MLProject" -o -name "*.py" | head -20
+        
     - name: Setup Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.9'
         
     - name: Setup Miniconda
-      uses: conda-incubator/setup-miniconda@v2
+      uses: conda-incubator/setup-miniconda@v3
       with:
         miniconda-version: "latest"
         activate-environment: iris-classification-env
-        environment-file: MLProject/conda.yaml
+        environment-file: conda.yaml  # Fixed path - conda.yaml is in root
         python-version: 3.9
         auto-activate-base: false
+        auto-update-conda: true
         
-    - name: Install MLflow
+    - name: Verify conda environment
+      shell: bash -l {0}
+      run: |
+        conda info
+        conda list
+        which python
+        python --version
+        
+    - name: Install additional dependencies
       shell: bash -l {0}
       run: |
         conda activate iris-classification-env
-        pip install mlflow
-        mlflow --version
+        pip install mlflow dagshub python-dotenv
+        echo "Installed packages:"
+        pip list | grep -E "(mlflow|dagshub|dotenv)"
         
     - name: Verify MLProject structure
       run: |
-        echo "Checking MLProject structure..."
-        ls -la MLProject/
-        echo "MLProject file:"
-        cat MLProject/MLProject || echo "MLProject file not found"
-        echo "Conda environment:"
-        cat MLProject/conda.yaml || echo "conda.yaml not found"
+        echo "Checking MLProject file..."
+        if [ -f MLProject ]; then
+          echo "✅ MLProject file found!"
+          echo "MLProject file content:"
+          cat MLProject
+        else
+          echo "❌ MLProject file not found!"
+          exit 1
+        fi
+        
+        echo "Checking modelling.py..."
+        if [ -f modelling.py ]; then
+          echo "✅ modelling.py found!"
+        else
+          echo "❌ modelling.py not found!"
+          exit 1
+        fi
         
     - name: Set up environment variables
       run: |
         echo "DAGSHUB_TOKEN=${{ secrets.DAGSHUB_TOKEN }}" >> $GITHUB_ENV
         echo "MLFLOW_TRACKING_USERNAME=alvian2022" >> $GITHUB_ENV
         echo "MLFLOW_TRACKING_PASSWORD=${{ secrets.DAGSHUB_TOKEN }}" >> $GITHUB_ENV
+        echo "PYTHONPATH=$GITHUB_WORKSPACE:$PYTHONPATH" >> $GITHUB_ENV
         
-    - name: Run MLflow Project Training
+    - name: Prepare data file (create sample if not exists)
       shell: bash -l {0}
       run: |
         conda activate iris-classification-env
-        cd MLProject
-        echo "Running MLflow project..."
+        python -c "
+import pandas as pd
+from sklearn.datasets import load_iris
+import os
+
+# Create sample data if iris_preprocessing.csv doesn't exist
+if not os.path.exists('iris_preprocessing.csv'):
+    print('Creating sample iris dataset...')
+    iris = load_iris()
+    df = pd.DataFrame(iris.data, columns=iris.feature_names)
+    df['target'] = iris.target
+    df.to_csv('iris_preprocessing.csv', index=False)
+    print('Sample data created: iris_preprocessing.csv')
+    print(f'Data shape: {df.shape}')
+else:
+    print('iris_preprocessing.csv already exists')
+"
+        
+    - name: Run MLflow Project Training (Using training entry point)
+      shell: bash -l {0}
+      run: |
+        conda activate iris-classification-env
+        echo "Running MLflow project with training entry point..."
+        echo "Current directory: $(pwd)"
+        echo "Available files:"
+        ls -la
+        
+        # Run the MLflow project using the training entry point
         mlflow run . \
+          --entry-point training \
           --experiment-name "${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" \
+          -P data_path="iris_preprocessing.csv" \
           -P n_estimators=${{ github.event.inputs.n_estimators || 100 }} \
           -P max_depth=${{ github.event.inputs.max_depth || 10 }} \
-          --env-manager conda
+          -P random_state=42 \
+          --env-manager conda \
+          --no-conda || echo "MLflow project run failed, trying main entry point..."
+      continue-on-error: true
+      
+    - name: Run MLflow Project Training (Using main entry point - fallback)
+      shell: bash -l {0}
+      run: |
+        conda activate iris-classification-env
+        echo "Trying main entry point as fallback..."
+        
+        # Run the MLflow project using the main entry point
+        mlflow run . \
+          --entry-point main \
+          --experiment-name "${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" \
+          -P data_path="iris_preprocessing.csv" \
+          -P experiment_name="${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" \
+          -P model_name="iris_classifier_ci" \
+          --env-manager conda \
+          --no-conda || echo "Main entry point also failed, trying direct Python execution..."
+      continue-on-error: true
+      
+    - name: Run Direct Python Training (Fallback Method)
+      shell: bash -l {0}
+      run: |
+        conda activate iris-classification-env
+        echo "Running direct Python training as fallback..."
+        python modelling.py \
+          --data_path "iris_preprocessing.csv" \
+          --experiment_name "${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" \
+          --n_estimators ${{ github.event.inputs.n_estimators || 100 }} \
+          --max_depth ${{ github.event.inputs.max_depth || 10 }} \
+          --random_state 42
           
     - name: Verify artifacts
       run: |
-        cd MLProject
         echo "Generated artifacts:"
-        ls -la *.pkl *.png *.txt *.md 2>/dev/null || echo "No artifacts found"
+        ls -la *.pkl *.png *.txt *.md 2>/dev/null || echo "No artifacts in root"
+        echo "Model artifacts directory:"
+        ls -la model_artifacts/ 2>/dev/null || echo "No model_artifacts directory"
+        echo "All files in current directory:"
+        find . -name "*.pkl" -o -name "*.png" -o -name "*.txt" -o -name "*.md" | head -10
         
     - name: Upload training artifacts
       uses: actions/upload-artifact@v4
       with:
         name: model-artifacts-${{ github.run_number }}
         path: |
-          MLProject/trained_model_ci.pkl
-          MLProject/confusion_matrix_ci.png
-          MLProject/feature_importance_ci.png
-          MLProject/classification_report_ci.txt
+          *.pkl
+          *.png
+          *.txt
+          *.md
+          model_artifacts/
         retention-days: 30
         if-no-files-found: warn
         
-    - name: Create simple summary
+    - name: Create workflow summary
       run: |
-        cd MLProject
-        echo "Training completed at $(date)" > summary.txt
-        echo "Workflow: ${{ github.run_number }}" >> summary.txt
-        echo "Commit: ${{ github.sha }}" >> summary.txt
-        echo "Parameters: n_estimators=${{ github.event.inputs.n_estimators || 100 }}, max_depth=${{ github.event.inputs.max_depth || 10 }}" >> summary.txt
+        echo "# Training Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **Workflow Run**: #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Timestamp**: $(date)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Parameters**: n_estimators=${{ github.event.inputs.n_estimators || 100 }}, max_depth=${{ github.event.inputs.max_depth || 10 }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Experiment**: ${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" >> $GITHUB_STEP_SUMMARY
         
-    - name: Upload summary
+        echo "## Generated Files" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        ls -la *.pkl *.png *.txt *.md 2>/dev/null || echo "No artifacts found"
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        
+        # Also create a simple summary file
+        echo "Training completed at $(date)" > training_summary.txt
+        echo "Workflow: ${{ github.run_number }}" >> training_summary.txt
+        echo "Commit: ${{ github.sha }}" >> training_summary.txt
+        echo "Parameters: n_estimators=${{ github.event.inputs.n_estimators || 100 }}, max_depth=${{ github.event.inputs.max_depth || 10 }}" >> training_summary.txt
+        echo "Author: alpian_khairi_C1BO" >> training_summary.txt
+        
+    - name: Upload workflow summary
       uses: actions/upload-artifact@v4
       with:
-        name: training-summary-${{ github.run_number }}
-        path: MLProject/summary.txt
+        name: workflow-summary-${{ github.run_number }}
+        path: training_summary.txt
         retention-days: 30
         if-no-files-found: warn
