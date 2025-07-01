@@ -137,27 +137,27 @@ jobs:
         # Create sample data if it doesn't exist
         python -c "
         
-import pandas as pd
-from sklearn.datasets import load_iris
-import os
+        import pandas as pd
+        from sklearn.datasets import load_iris
+        import os
 
-# Create sample data if iris_preprocessing.csv doesn't exist
-if not os.path.exists('iris_preprocessing.csv'):
-    print('Creating sample iris dataset...')
-    iris = load_iris()
-    df = pd.DataFrame(iris.data, columns=iris.feature_names)
-    df['target'] = iris.target
-    df.to_csv('iris_preprocessing.csv', index=False)
-    print('Sample data created: iris_preprocessing.csv')
-    print(f'Data shape: {df.shape}')
-    print(f'Columns: {list(df.columns)}')
-    print(f'Target distribution:\\n{df.target.value_counts()}')
-else:
-    print('iris_preprocessing.csv already exists')
-    df = pd.read_csv('iris_preprocessing.csv')
-    print(f'Data shape: {df.shape}')
-    print(f'Columns: {list(df.columns)}')
-"
+        # Create sample data if iris_preprocessing.csv doesn't exist
+        if not os.path.exists('iris_preprocessing.csv'):
+            print('Creating sample iris dataset...')
+            iris = load_iris()
+            df = pd.DataFrame(iris.data, columns=iris.feature_names)
+            df['target'] = iris.target
+            df.to_csv('iris_preprocessing.csv', index=False)
+            print('Sample data created: iris_preprocessing.csv')
+            print(f'Data shape: {df.shape}')
+            print(f'Columns: {list(df.columns)}')
+            print(f'Target distribution:\\n{df.target.value_counts()}')
+        else:
+            print('iris_preprocessing.csv already exists')
+            df = pd.read_csv('iris_preprocessing.csv')
+            print(f'Data shape: {df.shape}')
+            print(f'Columns: {list(df.columns)}')
+        "
         
     - name: Run MLflow Project Training (Primary Method)
       working-directory: ./MLproject
