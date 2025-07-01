@@ -4,7 +4,7 @@ on:
   push:
     branches: [ main, develop ]
     paths:
-      - 'MLProject/**'
+      - 'Workflow-CI/MLproject/**'
       - '.github/workflows/**'
       - '*.py'
       - '*.yaml'
@@ -37,14 +37,16 @@ jobs:
     - name: Verify conda.yaml exists
       run: |
         echo "Checking for conda.yaml file..."
-        if [ -f conda.yaml ]; then
+        if [ -f Workflow-CI/MLproject/conda.yaml ]; then
           echo "✅ conda.yaml found!"
           echo "conda.yaml content:"
-          cat conda.yaml
+          cat Workflow-CI/MLproject/conda.yaml
         else
-          echo "❌ conda.yaml not found in root directory!"
+          echo "❌ conda.yaml not found in Workflow-CI/MLproject/ directory!"
           echo "Files in root directory:"
           ls -la
+          echo "Files in Workflow-CI/MLproject/ directory:"
+          ls -la Workflow-CI/MLproject/ || echo "Directory not found"
           exit 1
         fi
       
@@ -52,8 +54,10 @@ jobs:
       run: |
         echo "Root directory contents:"
         ls -la
-        echo "MLProject directory contents (if exists):"
-        ls -la MLProject/ || echo "MLProject directory not found"
+        echo "Workflow-CI directory contents (if exists):"
+        ls -la Workflow-CI/ || echo "Workflow-CI directory not found"
+        echo "MLproject directory contents (if exists):"
+        ls -la Workflow-CI/MLproject/ || echo "MLproject directory not found"
         echo "Looking for conda.yaml and MLProject files..."
         find . -name "conda.yaml" -o -name "MLProject" -o -name "*.py" | head -20
         
@@ -67,7 +71,7 @@ jobs:
       with:
         miniconda-version: "latest"
         activate-environment: iris-classification-env
-        environment-file: ./conda.yaml
+        environment-file: ./Workflow-CI/MLproject/conda.yaml
         python-version: 3.9
         auto-activate-base: false
         auto-update-conda: true
@@ -120,20 +124,26 @@ jobs:
     - name: Verify MLProject structure
       run: |
         echo "Checking MLProject file..."
-        if [ -f MLProject ]; then
+        if [ -f Workflow-CI/MLproject/MLProject ]; then
           echo "✅ MLProject file found!"
           echo "MLProject file content:"
-          cat MLProject
+          cat Workflow-CI/MLproject/MLProject
         else
           echo "❌ MLProject file not found!"
+          echo "Looking for MLProject file:"
+          find . -name "MLProject" || echo "No MLProject file found"
           exit 1
         fi
         
         echo "Checking modelling.py..."
-        if [ -f modelling.py ]; then
+        if [ -f Workflow-CI/MLproject/modelling.py ]; then
           echo "✅ modelling.py found!"
+        elif [ -f modelling.py ]; then
+          echo "✅ modelling.py found in root!"
         else
           echo "❌ modelling.py not found!"
+          echo "Looking for modelling.py:"
+          find . -name "modelling.py" || echo "No modelling.py found"
           exit 1
         fi
         
@@ -144,8 +154,16 @@ jobs:
         echo "MLFLOW_TRACKING_PASSWORD=${{ secrets.DAGSHUB_TOKEN }}" >> $GITHUB_ENV
         echo "PYTHONPATH=$GITHUB_WORKSPACE:$PYTHONPATH" >> $GITHUB_ENV
         
+    - name: Change to project directory
+      run: |
+        cd Workflow-CI/MLproject
+        echo "Changed to project directory: $(pwd)"
+        echo "Files in current directory:"
+        ls -la
+        
     - name: Prepare data file (create sample if not exists)
       run: |
+        cd Workflow-CI/MLproject
         # Activate conda environment if available, otherwise use default python
         if command -v conda &> /dev/null; then
           conda activate iris-classification-env || echo "Conda activate failed, using default python"
@@ -171,6 +189,7 @@ jobs:
         
     - name: Run MLflow Project Training (Using training entry point)
       run: |
+        cd Workflow-CI/MLproject
         # Activate conda environment if available
         if command -v conda &> /dev/null; then
           conda activate iris-classification-env || echo "Conda activate failed, using default python"
@@ -195,6 +214,7 @@ jobs:
       
     - name: Run MLflow Project Training (Using main entry point - fallback)
       run: |
+        cd Workflow-CI/MLproject
         # Activate conda environment if available
         if command -v conda &> /dev/null; then
           conda activate iris-classification-env || echo "Conda activate failed, using default python"
@@ -215,6 +235,7 @@ jobs:
       
     - name: Run Direct Python Training (Fallback Method)
       run: |
+        cd Workflow-CI/MLproject
         # Activate conda environment if available
         if command -v conda &> /dev/null; then
           conda activate iris-classification-env || echo "Conda activate failed, using default python"
@@ -230,8 +251,9 @@ jobs:
           
     - name: Verify artifacts
       run: |
+        cd Workflow-CI/MLproject
         echo "Generated artifacts:"
-        ls -la *.pkl *.png *.txt *.md 2>/dev/null || echo "No artifacts in root"
+        ls -la *.pkl *.png *.txt *.md 2>/dev/null || echo "No artifacts in project directory"
         echo "Model artifacts directory:"
         ls -la model_artifacts/ 2>/dev/null || echo "No model_artifacts directory"
         echo "All files in current directory:"
@@ -242,16 +264,17 @@ jobs:
       with:
         name: model-artifacts-${{ github.run_number }}
         path: |
-          *.pkl
-          *.png
-          *.txt
-          *.md
-          model_artifacts/
+          Workflow-CI/MLproject/*.pkl
+          Workflow-CI/MLproject/*.png
+          Workflow-CI/MLproject/*.txt
+          Workflow-CI/MLproject/*.md
+          Workflow-CI/MLproject/model_artifacts/
         retention-days: 30
         if-no-files-found: warn
         
     - name: Create workflow summary
       run: |
+        cd Workflow-CI/MLproject
         echo "# Training Summary" >> $GITHUB_STEP_SUMMARY
         echo "- **Workflow Run**: #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
@@ -275,6 +298,6 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: workflow-summary-${{ github.run_number }}
-        path: training_summary.txt
+        path: Workflow-CI/MLproject/training_summary.txt
         retention-days: 30
         if-no-files-found: warn
