@@ -53,7 +53,7 @@ jobs:
       with:
         miniconda-version: "latest"
         activate-environment: iris-classification-env
-        environment-file: conda.yaml  # Fixed path - conda.yaml is in root
+        environment-file: conda.yaml
         python-version: 3.9
         auto-activate-base: false
         auto-update-conda: true
@@ -106,22 +106,22 @@ jobs:
       run: |
         conda activate iris-classification-env
         python -c "
-import pandas as pd
-from sklearn.datasets import load_iris
-import os
+        import pandas as pd
+        from sklearn.datasets import load_iris
+        import os
 
-# Create sample data if iris_preprocessing.csv doesn't exist
-if not os.path.exists('iris_preprocessing.csv'):
-    print('Creating sample iris dataset...')
-    iris = load_iris()
-    df = pd.DataFrame(iris.data, columns=iris.feature_names)
-    df['target'] = iris.target
-    df.to_csv('iris_preprocessing.csv', index=False)
-    print('Sample data created: iris_preprocessing.csv')
-    print(f'Data shape: {df.shape}')
-else:
-    print('iris_preprocessing.csv already exists')
-"
+        # Create sample data if iris_preprocessing.csv doesn't exist
+        if not os.path.exists('iris_preprocessing.csv'):
+            print('Creating sample iris dataset...')
+            iris = load_iris()
+            df = pd.DataFrame(iris.data, columns=iris.feature_names)
+            df['target'] = iris.target
+            df.to_csv('iris_preprocessing.csv', index=False)
+            print('Sample data created: iris_preprocessing.csv')
+            print(f'Data shape: {df.shape}')
+        else:
+            print('iris_preprocessing.csv already exists')
+        "
         
     - name: Run MLflow Project Training (Using training entry point)
       shell: bash -l {0}
