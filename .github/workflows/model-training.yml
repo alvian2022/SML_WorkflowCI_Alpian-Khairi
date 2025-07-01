@@ -34,37 +34,82 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
       
-    - name: Verify conda.yaml exists
-      run: |
-        echo "Checking for conda.yaml file..."
-        if [ -f MLproject/conda.yaml ]; then
-          echo "✅ conda.yaml found!"
-          echo "conda.yaml content:"
-          cat MLproject/conda.yaml
-        else
-          echo "❌ conda.yaml not found in MLproject/ directory!"
-          echo "Files in root directory:"
-          ls -la
-          echo "Files in MLproject/ directory:"
-          ls -la MLproject/ || echo "Directory not found"
-          exit 1
-        fi
-      
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        
     - name: Debug - List project structure
       run: |
         echo "Root directory contents:"
         ls -la
         echo "MLproject directory contents (if exists):"
         ls -la MLproject/ || echo "MLproject directory not found"
-        echo "Looking for conda.yaml and MLProject files..."
-        find . -name "conda.yaml" -o -name "MLProject" -o -name "*.py" | head -20
+        echo "Looking for required files..."
+        find . -name "conda.yaml" -o -name "MLProject" -o -name "modelling.py" | head -20
         
-    - name: Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.9'
+    - name: Verify required files exist
+      run: |
+        echo "Checking for required files..."
         
-    - name: Setup Miniconda
+        # Check conda.yaml
+        if [ -f MLproject/conda.yaml ]; then
+          echo "✅ conda.yaml found!"
+          echo "conda.yaml content:"
+          cat MLproject/conda.yaml
+        else
+          echo "❌ conda.yaml not found!"
+          exit 1
+        fi
+        
+        # Check MLProject
+        if [ -f MLproject/MLProject ]; then
+          echo "✅ MLProject file found!"
+          echo "MLProject file content:"
+          cat MLproject/MLProject
+        else
+          echo "❌ MLProject file not found!"
+          exit 1
+        fi
+        
+        # Check modelling.py
+        if [ -f MLproject/modelling.py ]; then
+          echo "✅ modelling.py found!"
+        else
+          echo "❌ modelling.py not found!"
+          exit 1
+        fi
+        
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        echo "Installing core dependencies..."
+        pip install numpy==1.24.4 pandas==2.1.4 scikit-learn==1.3.2 
+        pip install matplotlib==3.8.2 seaborn==0.13.0
+        pip install mlflow==2.8.1 dagshub python-dotenv joblib
+        
+    - name: Verify Python environment
+      run: |
+        echo "Python version:"
+        python --version
+        echo "Installed packages:"
+        pip list | grep -E "(numpy|pandas|scikit-learn|matplotlib|seaborn|mlflow|dagshub|joblib)" || echo "Some packages might be missing"
+        echo "Python path:"
+        python -c "import sys; print('\\n'.join(sys.path))"
+        
+    - name: Test imports
+      run: |
+        echo "Testing critical imports..."
+        python -c "import numpy; print(f'NumPy: {numpy.__version__}')"
+        python -c "import pandas; print(f'Pandas: {pandas.__version__}')"
+        python -c "import sklearn; print(f'Scikit-learn: {sklearn.__version__}')"
+        python -c "import matplotlib; print(f'Matplotlib: {matplotlib.__version__}')"
+        python -c "import seaborn; print(f'Seaborn: {seaborn.__version__}')"
+        python -c "import mlflow; print(f'MLflow: {mlflow.__version__}')"
+        python -c "import dagshub; print('DagsHub: OK')"
+        python -c "import joblib; print(f'Joblib: {joblib.__version__}')"
+        
+    - name: Setup Miniconda (optional - for MLflow conda env)
       uses: conda-incubator/setup-miniconda@v3
       with:
         miniconda-version: "latest"
@@ -75,128 +120,59 @@ jobs:
         auto-update-conda: true
       continue-on-error: true
       
-    - name: Setup Python environment (Fallback if conda fails)
-      if: failure()
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.9'
-        
-    - name: Install dependencies with pip (Fallback)
-      if: failure()
-      run: |
-        pip install --upgrade pip
-        pip install numpy==1.24.4 pandas==2.1.4 scikit-learn==1.3.2 matplotlib==3.8.2 seaborn==0.13.0
-        pip install mlflow==2.8.1 dagshub python-dotenv joblib
-        
-    - name: Verify environment
-      run: |
-        echo "Checking Python environment..."
-        which python
-        python --version
-        echo "Checking installed packages..."
-        pip list | grep -E "(numpy|pandas|scikit-learn|mlflow|dagshub)" || echo "Some packages might be missing"
-        
-        # Try conda if available
-        if command -v conda &> /dev/null; then
-          echo "Conda is available:"
-          conda info || echo "Conda info failed"
-          conda list || echo "Conda list failed"
-        else
-          echo "Conda is not available, using pip environment"
-        fi
-        
-    - name: Install additional dependencies
-      run: |
-        # Try with conda first, then pip
-        if command -v conda &> /dev/null; then
-          echo "Using conda environment..."
-          conda activate iris-classification-env || echo "Conda activate failed"
-          pip install mlflow dagshub python-dotenv
-        else
-          echo "Using pip environment..."
-          pip install mlflow dagshub python-dotenv
-        fi
-        echo "Installed packages:"
-        pip list | grep -E "(mlflow|dagshub|dotenv)" || echo "Some packages might not be installed"
-        
-    - name: Verify MLProject structure
-      run: |
-        echo "Checking MLProject file..."
-        if [ -f MLproject/MLProject ]; then
-          echo "✅ MLProject file found!"
-          echo "MLProject file content:"
-          cat MLproject/MLProject
-        else
-          echo "❌ MLProject file not found!"
-          echo "Looking for MLProject file:"
-          find . -name "MLProject" || echo "No MLProject file found"
-          exit 1
-        fi
-        
-        echo "Checking modelling.py..."
-        if [ -f MLproject/modelling.py ]; then
-          echo "✅ modelling.py found!"
-        elif [ -f modelling.py ]; then
-          echo "✅ modelling.py found in root!"
-        else
-          echo "❌ modelling.py not found!"
-          echo "Looking for modelling.py:"
-          find . -name "modelling.py" || echo "No modelling.py found"
-          exit 1
-        fi
-        
     - name: Set up environment variables
       run: |
         echo "DAGSHUB_TOKEN=${{ secrets.DAGSHUB_TOKEN }}" >> $GITHUB_ENV
         echo "MLFLOW_TRACKING_USERNAME=alvian2022" >> $GITHUB_ENV
         echo "MLFLOW_TRACKING_PASSWORD=${{ secrets.DAGSHUB_TOKEN }}" >> $GITHUB_ENV
-        echo "PYTHONPATH=$GITHUB_WORKSPACE:$PYTHONPATH" >> $GITHUB_ENV
+        echo "PYTHONPATH=$GITHUB_WORKSPACE:$GITHUB_WORKSPACE/MLproject:$PYTHONPATH" >> $GITHUB_ENV
         
-    - name: Change to project directory
+    - name: Change to project directory and prepare data
       run: |
         cd MLproject
         echo "Changed to project directory: $(pwd)"
         echo "Files in current directory:"
         ls -la
         
-    - name: Prepare data file (create sample if not exists)
-      run: |
-        cd MLproject
-        # Activate conda environment if available, otherwise use default python
-        if command -v conda &> /dev/null; then
-          conda activate iris-classification-env || echo "Conda activate failed, using default python"
-        fi
-        
+        # Create sample data if it doesn't exist
         python -c "
-        import pandas as pd
-        from sklearn.datasets import load_iris
-        import os
+        
+import pandas as pd
+from sklearn.datasets import load_iris
+import os
 
-        # Create sample data if iris_preprocessing.csv doesn't exist
-        if not os.path.exists('iris_preprocessing.csv'):
-            print('Creating sample iris dataset...')
-            iris = load_iris()
-            df = pd.DataFrame(iris.data, columns=iris.feature_names)
-            df['target'] = iris.target
-            df.to_csv('iris_preprocessing.csv', index=False)
-            print('Sample data created: iris_preprocessing.csv')
-            print(f'Data shape: {df.shape}')
-        else:
-            print('iris_preprocessing.csv already exists')
-        "
+# Create sample data if iris_preprocessing.csv doesn't exist
+if not os.path.exists('iris_preprocessing.csv'):
+    print('Creating sample iris dataset...')
+    iris = load_iris()
+    df = pd.DataFrame(iris.data, columns=iris.feature_names)
+    df['target'] = iris.target
+    df.to_csv('iris_preprocessing.csv', index=False)
+    print('Sample data created: iris_preprocessing.csv')
+    print(f'Data shape: {df.shape}')
+    print(f'Columns: {list(df.columns)}')
+    print(f'Target distribution:\\n{df.target.value_counts()}')
+else:
+    print('iris_preprocessing.csv already exists')
+    df = pd.read_csv('iris_preprocessing.csv')
+    print(f'Data shape: {df.shape}')
+    print(f'Columns: {list(df.columns)}')
+"
         
-    - name: Run MLflow Project Training (Using training entry point)
+    - name: Run MLflow Project Training (Primary Method)
+      working-directory: ./MLproject
       run: |
-        cd MLproject
-        # Activate conda environment if available
-        if command -v conda &> /dev/null; then
-          conda activate iris-classification-env || echo "Conda activate failed, using default python"
-        fi
-        
         echo "Running MLflow project with training entry point..."
         echo "Current directory: $(pwd)"
         echo "Available files:"
         ls -la
+        
+        # Try to activate conda environment if available
+        if command -v conda &> /dev/null; then
+          echo "Conda available, trying to activate environment..."
+          eval "$(conda shell.bash hook)"
+          conda activate iris-classification-env || echo "Conda activate failed, using pip environment"
+        fi
         
         # Run the MLflow project using the training entry point
         mlflow run . \
@@ -206,18 +182,13 @@ jobs:
           -P n_estimators=${{ github.event.inputs.n_estimators || 100 }} \
           -P max_depth=${{ github.event.inputs.max_depth || 10 }} \
           -P random_state=42 \
-          --env-manager conda \
-          --no-conda || echo "MLflow project run failed, trying main entry point..."
+          --env-manager local || echo "MLflow project training entry point failed"
       continue-on-error: true
       
-    - name: Run MLflow Project Training (Using main entry point - fallback)
+    - name: Run MLflow Project Main Entry Point (Fallback 1)
+      if: failure()
+      working-directory: ./MLproject
       run: |
-        cd MLproject
-        # Activate conda environment if available
-        if command -v conda &> /dev/null; then
-          conda activate iris-classification-env || echo "Conda activate failed, using default python"
-        fi
-        
         echo "Trying main entry point as fallback..."
         
         # Run the MLflow project using the main entry point
@@ -227,35 +198,49 @@ jobs:
           -P data_path="iris_preprocessing.csv" \
           -P experiment_name="${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" \
           -P model_name="iris_classifier_ci" \
-          --env-manager conda \
-          --no-conda || echo "Main entry point also failed, trying direct Python execution..."
+          -P n_estimators=${{ github.event.inputs.n_estimators || 100 }} \
+          -P max_depth=${{ github.event.inputs.max_depth || 10 }} \
+          -P random_state=42 \
+          --env-manager local || echo "Main entry point also failed"
       continue-on-error: true
       
-    - name: Run Direct Python Training (Fallback Method)
+    - name: Run Direct Python Training (Fallback 2)
+      if: failure()
+      working-directory: ./MLproject
       run: |
-        cd MLproject
-        # Activate conda environment if available
-        if command -v conda &> /dev/null; then
-          conda activate iris-classification-env || echo "Conda activate failed, using default python"
-        fi
+        echo "Running direct Python training as final fallback..."
+        echo "Current Python environment:"
+        which python
+        python --version
+        pip list | grep -E "(numpy|pandas|scikit-learn|matplotlib|seaborn|mlflow)" || echo "Missing packages"
         
-        echo "Running direct Python training as fallback..."
+        # Run direct Python training
         python modelling.py \
           --data_path "iris_preprocessing.csv" \
           --experiment_name "${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" \
+          --model_name "iris_classifier_ci" \
           --n_estimators ${{ github.event.inputs.n_estimators || 100 }} \
           --max_depth ${{ github.event.inputs.max_depth || 10 }} \
           --random_state 42
           
-    - name: Verify artifacts
+    - name: Verify artifacts were created
+      working-directory: ./MLproject
       run: |
-        cd MLproject
-        echo "Generated artifacts:"
-        ls -la *.pkl *.png *.txt *.md 2>/dev/null || echo "No artifacts in project directory"
+        echo "Checking for generated artifacts..."
+        echo "Python files:"
+        ls -la *.py || echo "No Python files"
+        echo "Data files:"
+        ls -la *.csv || echo "No CSV files"
+        echo "Model files:"
+        ls -la *.pkl || echo "No PKL files"
+        echo "Image files:"
+        ls -la *.png || echo "No PNG files"
+        echo "Text files:"
+        ls -la *.txt *.md || echo "No TXT/MD files"
         echo "Model artifacts directory:"
-        ls -la model_artifacts/ 2>/dev/null || echo "No model_artifacts directory"
-        echo "All files in current directory:"
-        find . -name "*.pkl" -o -name "*.png" -o -name "*.txt" -o -name "*.md" | head -10
+        ls -la model_artifacts/ || echo "No model_artifacts directory"
+        echo "MLruns directory:"
+        ls -la mlruns/ || echo "No mlruns directory"
         
     - name: Upload training artifacts
       uses: actions/upload-artifact@v4
@@ -266,31 +251,40 @@ jobs:
           MLproject/*.png
           MLproject/*.txt
           MLproject/*.md
+          MLproject/*.csv
           MLproject/model_artifacts/
+          MLproject/mlruns/
         retention-days: 30
         if-no-files-found: warn
         
     - name: Create workflow summary
+      working-directory: ./MLproject
       run: |
-        cd MLproject
         echo "# Training Summary" >> $GITHUB_STEP_SUMMARY
         echo "- **Workflow Run**: #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Timestamp**: $(date)" >> $GITHUB_STEP_SUMMARY
         echo "- **Parameters**: n_estimators=${{ github.event.inputs.n_estimators || 100 }}, max_depth=${{ github.event.inputs.max_depth || 10 }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Experiment**: ${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Author**: alpian_khairi_C1BO" >> $GITHUB_STEP_SUMMARY
         
         echo "## Generated Files" >> $GITHUB_STEP_SUMMARY
         echo '```' >> $GITHUB_STEP_SUMMARY
-        ls -la *.pkl *.png *.txt *.md 2>/dev/null || echo "No artifacts found"
+        ls -la *.pkl *.png *.txt *.md *.csv 2>/dev/null || echo "No artifacts found in project directory"
         echo '```' >> $GITHUB_STEP_SUMMARY
         
-        # Also create a simple summary file
+        echo "## Directory Structure" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        find . -type f -name "*.pkl" -o -name "*.png" -o -name "*.txt" -o -name "*.md" | head -20 || echo "No artifacts found"
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        
+        # Create a simple summary file
         echo "Training completed at $(date)" > training_summary.txt
         echo "Workflow: ${{ github.run_number }}" >> training_summary.txt
         echo "Commit: ${{ github.sha }}" >> training_summary.txt
         echo "Parameters: n_estimators=${{ github.event.inputs.n_estimators || 100 }}, max_depth=${{ github.event.inputs.max_depth || 10 }}" >> training_summary.txt
         echo "Author: alpian_khairi_C1BO" >> training_summary.txt
+        echo "Status: SUCCESS" >> training_summary.txt
         
     - name: Upload workflow summary
       uses: actions/upload-artifact@v4
