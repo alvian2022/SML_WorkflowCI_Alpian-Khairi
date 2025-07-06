@@ -1,1 +1,1 @@
-https://dagshub.com/alvian2022/iris-classification
+https://dagshub.com/alvian2022/diabetes-classification
