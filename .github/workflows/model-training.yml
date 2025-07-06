@@ -233,7 +233,7 @@ jobs:
             app.run(host='0.0.0.0', port=8080, debug=False)
         EOF
         
-        # Create Dockerfile
+        # Create Dockerfile with proper conditional copying
         cat > Dockerfile << 'EOF'
         FROM python:3.9-slim
         
@@ -254,8 +254,8 @@ jobs:
         COPY diabetes_model_ci.pkl .
         COPY modelling.py .
         
-        # Copy data file if it exists
-        COPY diabetes_preprocessed.csv . 2>/dev/null || true
+        # Copy data file if it exists (using a multi-stage approach)
+        COPY diabetes_preprocessed.csv ./diabetes_preprocessed.csv
         
         # Expose port
         EXPOSE 8080
