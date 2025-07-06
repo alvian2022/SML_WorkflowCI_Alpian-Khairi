@@ -55,8 +55,8 @@ def build_docker_image():
     
     # Docker image names
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    image_name_latest = "alpian-khairi/iris-model:latest"
-    image_name_timestamped = f"alpian-khairi/iris-model:{timestamp}"
+    image_name_latest = "alpian-khairi/diabetes-classification-model:latest"
+    image_name_timestamped = f"alpian-khairi/diabetes-classification-model:{timestamp}"
     
     # Build Docker image
     cmd = [

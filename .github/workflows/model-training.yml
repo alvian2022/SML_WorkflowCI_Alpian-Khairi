@@ -1,4 +1,4 @@
-name: MLflow CI/CD with Docker Hub
+name: Diabetes MLflow CI/CD with Docker Hub
 
 on:
   push:
@@ -16,7 +16,7 @@ on:
       experiment_name:
         description: 'MLflow experiment name'
         required: false
-        default: 'iris_classification_ci_alpian_khairi'
+        default: 'diabetes_classification_ci_[nama-siswa]'
       n_estimators:
         description: 'Number of estimators'
         required: false
@@ -25,14 +25,6 @@ on:
         description: 'Maximum depth'
         required: false
         default: '10'
-      use_remote_tracking:
-        description: 'Use DagsHub remote tracking (true/false)'
-        required: false
-        default: 'false'
-        type: choice
-        options:
-        - 'true'
-        - 'false'
       build_docker:
         description: 'Build and push Docker image (true/false)'
         required: false
@@ -43,7 +35,7 @@ on:
         - 'false'
 
 jobs:
-  model-training-and-docker:
+  diabetes-model-training-and-docker:
     runs-on: ubuntu-latest
     
     steps:
@@ -73,36 +65,56 @@ jobs:
         echo "MLFLOW_HTTP_REQUEST_TIMEOUT=30" >> $GITHUB_ENV
         echo "MLFLOW_HTTP_REQUEST_MAX_RETRIES=3" >> $GITHUB_ENV
         
-        if [ "${{ secrets.DAGSHUB_TOKEN }}" != "" ] && [ "${{ github.event.inputs.use_remote_tracking }}" == "true" ]; then
-          echo "DAGSHUB_TOKEN=${{ secrets.DAGSHUB_TOKEN }}" >> $GITHUB_ENV
-          echo "MLFLOW_TRACKING_USERNAME=alvian2022" >> $GITHUB_ENV
-          echo "MLFLOW_TRACKING_PASSWORD=${{ secrets.DAGSHUB_TOKEN }}" >> $GITHUB_ENV
-          echo "REMOTE_TRACKING_ENABLED=true" >> $GITHUB_ENV
-        else
-          echo "REMOTE_TRACKING_ENABLED=false" >> $GITHUB_ENV
-        fi
-        
-    - name: Prepare data and run training
+    - name: Prepare diabetes data and run training
       working-directory: ./MLproject
       run: |
-        # Create sample data if needed
+        # Create sample diabetes data if needed
         python -c "
         import pandas as pd
-        from sklearn.datasets import load_iris
+        import numpy as np
+        from sklearn.preprocessing import LabelEncoder
         import os
-        if not os.path.exists('iris_preprocessing.csv'):
-            iris = load_iris()
-            df = pd.DataFrame(iris.data, columns=iris.feature_names)
-            df['target'] = iris.target
-            df.to_csv('iris_preprocessing.csv', index=False)
-            print('Sample data created')
+        
+        if not os.path.exists('diabetes_preprocessed.csv'):
+            # Create sample diabetes data
+            np.random.seed(42)
+            n_samples = 1000
+            
+            data = {
+                'gender': np.random.choice(['Male', 'Female'], n_samples),
+                'age': np.random.normal(50, 15, n_samples),
+                'hypertension': np.random.choice([0, 1], n_samples, p=[0.8, 0.2]),
+                'heart_disease': np.random.choice([0, 1], n_samples, p=[0.9, 0.1]),
+                'smoking_history': np.random.choice(['never', 'former', 'current'], n_samples),
+                'bmi': np.random.normal(25, 5, n_samples),
+                'HbA1c_level': np.random.normal(5.5, 1, n_samples),
+                'blood_glucose_level': np.random.normal(120, 30, n_samples),
+                'diabetes': np.random.choice([0, 1], n_samples, p=[0.7, 0.3])
+            }
+            
+            df = pd.DataFrame(data)
+            
+            # Basic preprocessing
+            le_gender = LabelEncoder()
+            le_smoking = LabelEncoder()
+            df['gender'] = le_gender.fit_transform(df['gender'])
+            df['smoking_history'] = le_smoking.fit_transform(df['smoking_history'])
+            
+            # Ensure positive values
+            df['age'] = np.clip(df['age'], 18, 100)
+            df['bmi'] = np.clip(df['bmi'], 15, 50)
+            df['HbA1c_level'] = np.clip(df['HbA1c_level'], 3, 15)
+            df['blood_glucose_level'] = np.clip(df['blood_glucose_level'], 50, 300)
+            
+            df.to_csv('diabetes_preprocessed.csv', index=False)
+            print('Sample diabetes data created')
         "
         
         # Run training
         python modelling.py \
-          --data_path "iris_preprocessing.csv" \
-          --experiment_name "${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" \
-          --model_name "iris_classifier_ci" \
+          --data_path "diabetes_preprocessed.csv" \
+          --experiment_name "${{ github.event.inputs.experiment_name || 'diabetes_classification_ci_[nama-siswa]' }}" \
+          --model_name "diabetes_classifier_ci" \
           --n_estimators ${{ github.event.inputs.n_estimators || 100 }} \
           --max_depth ${{ github.event.inputs.max_depth || 10 }} \
           --random_state 42
@@ -114,15 +126,15 @@ jobs:
         username: ${{ secrets.DOCKER_HUB_USERNAME }}
         password: ${{ secrets.DOCKER_HUB_TOKEN }}
         
-    - name: Build MLflow Docker Image
+    - name: Build MLflow Docker Image for Diabetes
       if: github.event.inputs.build_docker != 'false'
       working-directory: ./MLproject
       run: |
-        echo "🐳 Building MLflow Docker image..."
+        echo "🐳 Building MLflow Docker image for diabetes classification..."
         
         # Check if model was trained successfully
-        if [ -f "trained_model_ci.pkl" ]; then
-          echo "✅ Model found, proceeding with Docker build"
+        if [ -f "diabetes_model_ci.pkl" ]; then
+          echo "✅ Diabetes model found, proceeding with Docker build"
           
           # Create a simple MLmodel file for MLflow
           mkdir -p model
@@ -147,10 +159,10 @@ jobs:
         EOF
           
           # Copy model file
-          cp trained_model_ci.pkl model/model.pkl
+          cp diabetes_model_ci.pkl model/model.pkl
           
           # Build Docker image using MLflow
-          DOCKER_IMAGE_NAME="${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow:latest"
+          DOCKER_IMAGE_NAME="${{ secrets.DOCKER_HUB_USERNAME }}/diabetes-classification-mlflow:latest"
           echo "Building Docker image: $DOCKER_IMAGE_NAME"
           
           # Use mlflow models build-docker
@@ -175,15 +187,45 @@ jobs:
         RUN pip install --no-cache-dir -r requirements.txt
 
         # Copy model and application files
-        COPY trained_model_ci.pkl model.pkl
+        COPY diabetes_model_ci.pkl model.pkl
         COPY modelling.py .
-        COPY iris_preprocessing.csv .
+        COPY diabetes_preprocessed.csv .
 
         # Expose port
         EXPOSE 8080
 
-        # Serve model
-        CMD ["python", "-c", "import mlflow; import joblib; model = joblib.load('model.pkl'); mlflow.pyfunc.serve_model(model, host='0.0.0.0', port=8080)"]
+        # Health check endpoint
+        COPY <<EOF /app/health_check.py
+        from flask import Flask, jsonify
+        import joblib
+        import os
+
+        app = Flask(__name__)
+
+        @app.route('/health')
+        def health():
+            try:
+                if os.path.exists('model.pkl'):
+                    return jsonify({"status": "healthy", "model": "diabetes_classifier"})
+                else:
+                    return jsonify({"status": "unhealthy", "error": "model not found"}), 500
+            except Exception as e:
+                return jsonify({"status": "unhealthy", "error": str(e)}), 500
+
+        @app.route('/predict', methods=['POST'])
+        def predict():
+            try:
+                model = joblib.load('model.pkl')
+                return jsonify({"status": "ready", "model_type": str(type(model))})
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
+
+        if __name__ == '__main__':
+            app.run(host='0.0.0.0', port=8080)
+        EOF
+
+        # Start health check service
+        CMD ["python", "health_check.py"]
         EOF
             
             docker build -f Dockerfile-model -t "$DOCKER_IMAGE_NAME" .
@@ -191,7 +233,7 @@ jobs:
           
           echo "✅ Docker image built successfully: $DOCKER_IMAGE_NAME"
         else
-          echo "❌ Model not found, skipping Docker build"
+          echo "❌ Diabetes model not found, skipping Docker build"
           exit 1
         fi
         
@@ -199,16 +241,16 @@ jobs:
       if: github.event.inputs.build_docker != 'false'
       working-directory: ./MLproject
       run: |
-        DOCKER_IMAGE_NAME="${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow:latest"
+        DOCKER_IMAGE_NAME="${{ secrets.DOCKER_HUB_USERNAME }}/diabetes-classification-mlflow:latest"
         echo "🚀 Pushing Docker image to Docker Hub..."
         
         docker push "$DOCKER_IMAGE_NAME"
         
         echo "✅ Docker image pushed successfully!"
-        echo "🐳 Docker Hub URL: https://hub.docker.com/r/${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow"
+        echo "🐳 Docker Hub URL: https://hub.docker.com/r/${{ secrets.DOCKER_HUB_USERNAME }}/diabetes-classification-mlflow"
         
         # Tag with build number
-        BUILD_TAG="${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow:build-${{ github.run_number }}"
+        BUILD_TAG="${{ secrets.DOCKER_HUB_USERNAME }}/diabetes-classification-mlflow:build-${{ github.run_number }}"
         docker tag "$DOCKER_IMAGE_NAME" "$BUILD_TAG"
         docker push "$BUILD_TAG"
         
@@ -217,13 +259,13 @@ jobs:
     - name: Test Docker Image Locally
       if: github.event.inputs.build_docker != 'false'
       run: |
-        DOCKER_IMAGE_NAME="${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow:latest"
+        DOCKER_IMAGE_NAME="${{ secrets.DOCKER_HUB_USERNAME }}/diabetes-classification-mlflow:latest"
         echo "🧪 Testing Docker image locally..."
         
         # Run container in background
-        docker run -d -p 8080:8080 --name test-model "$DOCKER_IMAGE_NAME" || {
+        docker run -d -p 8080:8080 --name test-diabetes-model "$DOCKER_IMAGE_NAME" || {
           echo "Failed to start container, checking logs..."
-          docker logs test-model || true
+          docker logs test-diabetes-model || true
           echo "Container failed to start"
         }
         
@@ -231,24 +273,24 @@ jobs:
         sleep 10
         
         # Check if container is running
-        if docker ps | grep test-model; then
+        if docker ps | grep test-diabetes-model; then
           echo "✅ Container is running successfully"
           
-          # Test model endpoint (optional)
+          # Test health endpoint
           curl -f http://localhost:8080/health || echo "Health check endpoint not available"
         else
           echo "❌ Container failed to start"
-          docker logs test-model || true
+          docker logs test-diabetes-model || true
         fi
         
         # Cleanup
-        docker stop test-model || true
-        docker rm test-model || true
+        docker stop test-diabetes-model || true
+        docker rm test-diabetes-model || true
         
     - name: Upload training artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: model-artifacts-${{ github.run_number }}
+        name: diabetes-model-artifacts-${{ github.run_number }}
         path: |
           MLproject/*.pkl
           MLproject/*.png
@@ -263,23 +305,23 @@ jobs:
     - name: Create comprehensive summary
       working-directory: ./MLproject
       run: |
-        echo "# 🎯 MLflow CI/CD Training & Docker Summary" >> $GITHUB_STEP_SUMMARY
+        echo "# 🎯 Diabetes MLflow CI/CD Training & Docker Summary" >> $GITHUB_STEP_SUMMARY
         echo "- **Workflow Run**: #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Timestamp**: $(date)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Dataset**: Diabetes Classification" >> $GITHUB_STEP_SUMMARY
         echo "- **Parameters**: n_estimators=${{ github.event.inputs.n_estimators || 100 }}, max_depth=${{ github.event.inputs.max_depth || 10 }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Experiment**: ${{ github.event.inputs.experiment_name || 'iris_classification_ci_alpian_khairi' }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Remote Tracking**: $REMOTE_TRACKING_ENABLED" >> $GITHUB_STEP_SUMMARY
+        echo "- **Experiment**: ${{ github.event.inputs.experiment_name || 'diabetes_classification_ci_[nama-siswa]' }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Docker Build**: ${{ github.event.inputs.build_docker != 'false' }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Author**: alpian_khairi_C1BO" >> $GITHUB_STEP_SUMMARY
+        echo "- **Author**: [nama-siswa]" >> $GITHUB_STEP_SUMMARY
         
         echo "## 🐳 Docker Information" >> $GITHUB_STEP_SUMMARY
         if [ "${{ github.event.inputs.build_docker }}" != "false" ]; then
-          echo "- **Docker Hub Repository**: https://hub.docker.com/r/${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow" >> $GITHUB_STEP_SUMMARY
-          echo "- **Latest Tag**: \`${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow:latest\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Build Tag**: \`${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow:build-${{ github.run_number }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Pull Command**: \`docker pull ${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow:latest\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Run Command**: \`docker run -p 8080:8080 ${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Docker Hub Repository**: https://hub.docker.com/r/${{ secrets.DOCKER_HUB_USERNAME }}/diabetes-classification-mlflow" >> $GITHUB_STEP_SUMMARY
+          echo "- **Latest Tag**: \`${{ secrets.DOCKER_HUB_USERNAME }}/diabetes-classification-mlflow:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Tag**: \`${{ secrets.DOCKER_HUB_USERNAME }}/diabetes-classification-mlflow:build-${{ github.run_number }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Pull Command**: \`docker pull ${{ secrets.DOCKER_HUB_USERNAME }}/diabetes-classification-mlflow:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Run Command**: \`docker run -p 8080:8080 ${{ secrets.DOCKER_HUB_USERNAME }}/diabetes-classification-mlflow:latest\`" >> $GITHUB_STEP_SUMMARY
         else
           echo "- Docker build was skipped" >> $GITHUB_STEP_SUMMARY
         fi
@@ -290,22 +332,19 @@ jobs:
         echo '```' >> $GITHUB_STEP_SUMMARY
         
         echo "## 📊 Training Results" >> $GITHUB_STEP_SUMMARY
-        if [ -f "training_summary.md" ]; then
-          cat training_summary.md >> $GITHUB_STEP_SUMMARY
+        if [ -f "diabetes_training_summary.md" ]; then
+          cat diabetes_training_summary.md >> $GITHUB_STEP_SUMMARY
         fi
         
     - name: Notify completion
       run: |
-        echo "🎉 MLflow CI/CD with Docker workflow completed successfully!"
+        echo "🎉 Diabetes MLflow CI/CD with Docker workflow completed successfully!"
         echo "📊 Check the 'Actions' tab for detailed results and artifacts"
         echo "📁 Artifacts will be available for download for 30 days"
         if [ "${{ github.event.inputs.build_docker }}" != "false" ]; then
-          echo "🐳 Docker image pushed to: https://hub.docker.com/r/${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow"
-          echo "🚀 Pull with: docker pull ${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow:latest"
-          echo "▶️  Run with: docker run -p 8080:8080 ${{ secrets.DOCKER_HUB_USERNAME }}/iris-classification-mlflow:latest"
+          echo "🐳 Docker image pushed to: https://hub.docker.com/r/${{ secrets.DOCKER_HUB_USERNAME }}/diabetes-classification-mlflow"
+          echo "🚀 Pull with: docker pull ${{ secrets.DOCKER_HUB_USERNAME }}/diabetes-classification-mlflow:latest"
+          echo "▶️  Run with: docker run -p 8080:8080 ${{ secrets.DOCKER_HUB_USERNAME }}/diabetes-classification-mlflow:latest"
         fi
-        if [ "$REMOTE_TRACKING_ENABLED" == "true" ]; then
-          echo "🌐 Remote tracking: Check DagsHub for experiment results"
-        else
-          echo "💻 Local tracking: MLflow results stored in artifacts"
-        fi
+        echo "💻 Local tracking: MLflow results stored in artifacts"
+        echo "🏥 Model: Diabetes Classification with Random Forest"
