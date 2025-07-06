@@ -22,7 +22,7 @@ Workflow-CI/
 │   ├── MLproject ✓
 │   ├── conda.yaml ✓
 │   ├── modelling.py ✓
-│   ├── iris_preprocessing.csv ✓
+│   ├── diabetes_preprocessed.csv ✓
 │   └── Dockerfile
 ├── mlruns/ ✓ (hasil eksekusi)
 └── README.md
