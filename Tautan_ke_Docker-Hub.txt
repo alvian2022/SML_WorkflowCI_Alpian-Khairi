@@ -1,0 +1,1 @@
+https://hub.docker.com/r/alvian2023/diabetes-classification-mlflow
